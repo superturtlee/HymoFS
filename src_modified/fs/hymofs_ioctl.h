@@ -4,6 +4,7 @@
 #include <linux/ioctl.h>
 
 #define HYMO_IOC_MAGIC 0xE0
+#define HYMO_PROTOCOL_VERSION 4
 
 struct hymo_ioctl_arg {
     char *src;

@@ -26,9 +26,9 @@
 #include <linux/miscdevice.h>
 #include <linux/cred.h>
 #include <linux/uidgid.h>
-#include "hymofs_ioctl.h"
 
 #include "hymofs.h"
+#include "hymofs_ioctl.h"
 
 #ifdef CONFIG_HYMOFS
 
@@ -355,6 +355,7 @@ bool __hymofs_should_hide(const char *pathname)
     struct hymo_hide_entry *entry;
     u32 hash;
     bool found = false;
+
     if (atomic_read(&hymo_version) == 0) return false;
     if (!pathname) return false;
 

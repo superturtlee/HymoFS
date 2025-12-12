@@ -259,7 +259,7 @@ static long hymo_ioctl(struct file *file, unsigned int cmd, unsigned long arg) {
             spin_lock_irqsave(&hymo_lock, flags);
             
             // Header
-            written += scnprintf(kbuf + written, buf_size - written, "HymoFS Protocol: 3\n");
+            written += scnprintf(kbuf + written, buf_size - written, "HymoFS Protocol: %d\n", HYMO_PROTOCOL_VERSION);
             written += scnprintf(kbuf + written, buf_size - written, "HymoFS Config Version: %d\n", atomic_read(&hymo_version));
 
             hash_for_each(hymo_paths, bkt, entry, node) {
