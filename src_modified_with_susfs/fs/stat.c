@@ -164,6 +164,7 @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
 
 	generic_fillattr(idmap, request_mask, inode, stat);
 #ifdef CONFIG_HYMOFS
+	/* HymoFS: Spoof timestamps if needed */
 	hymofs_spoof_stat(path, stat);
 #endif
 	return 0;

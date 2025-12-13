@@ -33,17 +33,15 @@ echo "hide /path/to/hide" > /proc/hymo_ctl
     *   **Access**: Returns `-ENOENT` (No such file or directory) when accessed via `open`, `access`, etc.
     *   **Listing**: Filters the entry out during `readdir` operations, making it invisible to `ls`.
 
-#### 4. Inject (Directory Injection)
-Enables "Ghost" files in a directory listing.
-```bash
-echo "inject /target/directory" > /proc/hymo_ctl
-```
+#### 4. Auto-Injection (Internal)
+Automatically enables "Ghost" files in a directory listing when a redirect rule is added for a non-existent file.
 *   **Mechanism**:
+    *   **Trigger**: When `add` is called, if the source path does not exist, HymoFS automatically identifies the parent directory and adds it to an internal injection list.
     *   **Listing**: Hooks `getdents/getdents64`. After the real directory entries are listed, HymoFS artificially appends entries defined by `add` rules that reside within this directory.
     *   **Mtime Spoofing**: Hooks `vfs_getattr` in `fs/stat.c`. Forces the directory's modification time (`mtime`) and change time (`ctime`) to report the current system time. This prevents caching issues and detection when "ghost" files are added.
 
 #### 5. Delete
-Removes a specific rule (redirect, hide, or inject) by its key path.
+Removes a specific rule (redirect or hide) by its key path.
 ```bash
 echo "delete /path/key" > /proc/hymo_ctl
 ```
@@ -51,7 +49,7 @@ echo "delete /path/key" > /proc/hymo_ctl
 *   **Key Path**:
     *   For **Add** rules: Use the *source* path (e.g., `/system/app/YouTube`).
     *   For **Hide** rules: Use the *target* path (e.g., `/system/app/Bloatware`).
-    *   For **Inject** rules: Use the *directory* path (e.g., `/system/app`).
+    *   **Note**: Injection rules are managed automatically and cleaned up when the corresponding redirect rule is deleted.
 
 ## Implementation Details
 

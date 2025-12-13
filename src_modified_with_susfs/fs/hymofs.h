@@ -3,6 +3,7 @@
 
 #include <linux/types.h>
 #include <linux/list.h>
+#include <linux/atomic.h>
 
 #ifdef CONFIG_HYMOFS
 

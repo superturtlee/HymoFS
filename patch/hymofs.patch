@@ -1,7 +1,7 @@
 diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 --- src_origin/fs/hymofs.c	1970-01-01 08:00:00.000000000 +0800
-+++ src_modified/fs/hymofs.c	2025-12-13 07:32:45.943923019 +0800
-@@ -0,0 +1,766 @@
++++ src_modified/fs/hymofs.c	2025-12-13 19:28:37.770232847 +0800
+@@ -0,0 +1,889 @@
 +#include <linux/string.h>
 +#include <linux/mm.h>
 +#include <linux/file.h>
@@ -31,13 +31,16 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +#include <linux/cred.h>
 +#include <linux/uidgid.h>
 +#include <linux/vmalloc.h>
++#include <linux/atomic.h>
++#include <linux/spinlock.h>
++#include <linux/kernel.h>
 +
 +#include "hymofs.h"
 +#include "hymofs_ioctl.h"
 +
 +#ifdef CONFIG_HYMOFS
 +
-+/* HymoFS God Mode - Advanced Path Manipulation */
++/* HymoFS - Advanced Path Manipulation and Hiding */
 +#define HYMO_HASH_BITS 10
 +
 +struct hymo_entry {
@@ -63,6 +66,12 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +atomic_t hymo_version = ATOMIC_INIT(0);
 +EXPORT_SYMBOL(hymo_version);
 +
++static bool hymo_debug_enabled = false;
++#define hymo_log(fmt, ...) do { \
++    if (hymo_debug_enabled) \
++        printk(KERN_INFO "hymofs: " fmt, ##__VA_ARGS__); \
++} while(0)
++
 +static void hymo_cleanup(void) {
 +    struct hymo_entry *entry;
 +    struct hymo_hide_entry *hide_entry;
@@ -84,6 +93,35 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +        hash_del(&inject_entry->node);
 +        kfree(inject_entry->dir);
 +        kfree(inject_entry);
++    }
++}
++
++static void hymofs_add_inject_rule(char *dir)
++{
++    struct hymo_inject_entry *inject_entry;
++    u32 hash;
++    bool found = false;
++
++    if (!dir) return;
++
++    hash = full_name_hash(NULL, dir, strlen(dir));
++    hash_for_each_possible(hymo_inject_dirs, inject_entry, node, hash) {
++        if (strcmp(inject_entry->dir, dir) == 0) {
++            found = true;
++            break;
++        }
++    }
++    if (!found) {
++        inject_entry = kmalloc(sizeof(*inject_entry), GFP_ATOMIC);
++        if (inject_entry) {
++            inject_entry->dir = dir; // Transfer ownership
++            hash_add(hymo_inject_dirs, &inject_entry->node, hash);
++            hymo_log("auto-inject parent: %s\n", dir);
++        } else {
++            kfree(dir);
++        }
++    } else {
++        kfree(dir);
 +    }
 +}
 +
@@ -110,6 +148,14 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +        return atomic_read(&hymo_version);
 +    }
 +
++    if (cmd == HYMO_IOC_SET_DEBUG) {
++        int val;
++        if (copy_from_user(&val, (void __user *)arg, sizeof(val))) return -EFAULT;
++        hymo_debug_enabled = !!val;
++        printk(KERN_INFO "hymofs: debug mode %s\n", hymo_debug_enabled ? "enabled" : "disabled");
++        return 0;
++    }
++
 +    if (copy_from_user(&req, (void __user *)arg, sizeof(req))) return -EFAULT;
 +
 +    if (req.src) {
@@ -125,8 +171,66 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +    }
 +
 +    switch (cmd) {
-+        case HYMO_IOC_ADD_RULE:
-+            if (!src || !target) { ret = -EINVAL; break; }
++        case HYMO_IOC_ADD_RULE: {
++            char *parent_dir = NULL;
++            char *resolved_src = NULL;
++            struct path path;
++            char *tmp_buf = kmalloc(PATH_MAX, GFP_KERNEL);
++            
++            if (!src || !target) { 
++                kfree(tmp_buf);
++                ret = -EINVAL; 
++                break; 
++            }
++            if (!tmp_buf) { ret = -ENOMEM; break; }
++
++            hymo_log("add rule: src=%s, target=%s, type=%d\n", src, target, req.type);
++            
++            // 1. Try to resolve full path (if file exists)
++            if (kern_path(src, LOOKUP_FOLLOW, &path) == 0) {
++                char *res = d_path(&path, tmp_buf, PATH_MAX);
++                if (!IS_ERR(res)) {
++                    resolved_src = kstrdup(res, GFP_KERNEL);
++                }
++                path_put(&path);
++            } else {
++                // 2. Path does not exist, try to resolve parent
++                char *last_slash = strrchr(src, '/');
++                if (last_slash && last_slash != src) {
++                    size_t len = last_slash - src;
++                    char *p_str = kmalloc(len + 1, GFP_KERNEL);
++                    if (p_str) {
++                        memcpy(p_str, src, len);
++                        p_str[len] = '\0';
++                        
++                        if (kern_path(p_str, LOOKUP_FOLLOW, &path) == 0) {
++                            char *res = d_path(&path, tmp_buf, PATH_MAX);
++                            if (!IS_ERR(res)) {
++                                // Reconstruct src = parent_resolved + / + filename
++                                size_t res_len = strlen(res);
++                                size_t name_len = strlen(last_slash);
++                                resolved_src = kmalloc(res_len + name_len + 1, GFP_KERNEL);
++                                if (resolved_src) {
++                                    strcpy(resolved_src, res);
++                                    strcat(resolved_src, last_slash);
++                                }
++                                // We need to inject this parent
++                                parent_dir = kstrdup(res, GFP_KERNEL);
++                            }
++                            path_put(&path);
++                        }
++                        kfree(p_str);
++                    }
++                }
++            }
++            
++            kfree(tmp_buf);
++
++            if (resolved_src) {
++                kfree(src);
++                src = resolved_src;
++            }
++
 +            hash = full_name_hash(NULL, src, strlen(src));
 +            spin_lock_irqsave(&hymo_lock, flags);
 +            hash_for_each_possible(hymo_paths, entry, node, hash) {
@@ -153,12 +257,45 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +                    }
 +                }
 +            }
++
++            // Add inject rule if needed
++            if (parent_dir) {
++                hymofs_add_inject_rule(parent_dir);
++            }
++
 +            atomic_inc(&hymo_version);
 +            spin_unlock_irqrestore(&hymo_lock, flags);
 +            break;
++        }
 +
-+        case HYMO_IOC_HIDE_RULE:
-+            if (!src) { ret = -EINVAL; break; }
++        case HYMO_IOC_HIDE_RULE: {
++            char *resolved_src = NULL;
++            struct path path;
++            char *tmp_buf = kmalloc(PATH_MAX, GFP_KERNEL);
++
++            if (!src) { 
++                kfree(tmp_buf);
++                ret = -EINVAL; 
++                break; 
++            }
++            if (!tmp_buf) { ret = -ENOMEM; break; }
++
++            hymo_log("hide rule: src=%s\n", src);
++
++            if (kern_path(src, LOOKUP_FOLLOW, &path) == 0) {
++                char *res = d_path(&path, tmp_buf, PATH_MAX);
++                if (!IS_ERR(res)) {
++                    resolved_src = kstrdup(res, GFP_KERNEL);
++                }
++                path_put(&path);
++            }
++            kfree(tmp_buf);
++
++            if (resolved_src) {
++                kfree(src);
++                src = resolved_src;
++            }
++
 +            hash = full_name_hash(NULL, src, strlen(src));
 +            spin_lock_irqsave(&hymo_lock, flags);
 +            hash_for_each_possible(hymo_hide_paths, hide_entry, node, hash) {
@@ -180,33 +317,11 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +            atomic_inc(&hymo_version);
 +            spin_unlock_irqrestore(&hymo_lock, flags);
 +            break;
-+
-+        case HYMO_IOC_INJECT_RULE:
-+            if (!src) { ret = -EINVAL; break; }
-+            hash = full_name_hash(NULL, src, strlen(src));
-+            spin_lock_irqsave(&hymo_lock, flags);
-+            hash_for_each_possible(hymo_inject_dirs, inject_entry, node, hash) {
-+                if (strcmp(inject_entry->dir, src) == 0) {
-+                    found = true;
-+                    break;
-+                }
-+            }
-+            if (!found) {
-+                inject_entry = kmalloc(sizeof(*inject_entry), GFP_ATOMIC);
-+                if (inject_entry) {
-+                    inject_entry->dir = kstrdup(src, GFP_ATOMIC);
-+                    if (inject_entry->dir)
-+                        hash_add(hymo_inject_dirs, &inject_entry->node, hash);
-+                    else
-+                        kfree(inject_entry);
-+                }
-+            }
-+            atomic_inc(&hymo_version);
-+            spin_unlock_irqrestore(&hymo_lock, flags);
-+            break;
++        }
 +
 +        case HYMO_IOC_DEL_RULE:
 +            if (!src) { ret = -EINVAL; break; }
++            hymo_log("del rule: src=%s\n", src);
 +            hash = full_name_hash(NULL, src, strlen(src));
 +            spin_lock_irqsave(&hymo_lock, flags);
 +            
@@ -316,8 +431,6 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +    unsigned long flags;
 +    ssize_t ret;
 +
-+    // printk(KERN_INFO "hymo_read: count=%zu, ppos=%lld\n", count, *ppos);
-+
 +    kbuf = vmalloc(size);
 +    if (!kbuf) return -ENOMEM;
 +    memset(kbuf, 0, size);
@@ -388,6 +501,7 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +    hash_for_each_possible(hymo_paths, entry, node, hash) {
 +        if (strcmp(entry->src, pathname) == 0) {
 +            target = kstrdup(entry->target, GFP_ATOMIC);
++            hymo_log("redirect %s -> %s\n", pathname, target);
 +            break;
 +        }
 +    }
@@ -417,6 +531,7 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +    hash_for_each_possible(hymo_hide_paths, entry, node, hash) {
 +        if (strcmp(entry->path, pathname) == 0) {
 +            found = true;
++            hymo_log("hide %s\n", pathname);
 +            break;
 +        }
 +    }
@@ -497,6 +612,7 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +        }
 +    }
 +    if (should_inject) {
++        hymo_log("injecting entries for %s\n", dir_path);
 +        hash_for_each(hymo_paths, bkt, entry, node) {
 +            if (strncmp(entry->src, dir_path, dir_len) == 0) {
 +                char *name = NULL;
@@ -511,7 +627,10 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +                    if (item) {
 +                        item->name = kstrdup(name, GFP_ATOMIC);
 +                        item->type = entry->type;
-+                        if (item->name) list_add(&item->list, head);
++                        if (item->name) {
++                            list_add(&item->list, head);
++                            hymo_log("  + injected %s\n", name);
++                        }
 +                        else kfree(item);
 +                    }
 +                }
@@ -530,7 +649,7 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +
 +    if (IS_ERR(result)) return result;
 +
-+    /* HymoFS God Mode Hook */
++    /* HymoFS Path Hiding Hook */
 +    if (hymofs_should_hide(result->name)) {
 +        putname(result);
 +        /* Return ENOENT directly */
@@ -599,6 +718,7 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +	char		d_name[];
 +};
 +
++/* Inject virtual entries into getdents system call */
 +int hymofs_inject_entries(struct hymo_readdir_context *ctx, void __user **dir_ptr, int *count, loff_t *pos)
 +{
 +    struct linux_dirent __user *current_dir = *dir_ptr;
@@ -675,6 +795,7 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +}
 +EXPORT_SYMBOL(hymofs_inject_entries);
 +
++/* Inject virtual entries into getdents64 system call */
 +int hymofs_inject_entries64(struct hymo_readdir_context *ctx, void __user **dir_ptr, int *count, loff_t *pos)
 +{
 +    struct linux_dirent64 __user *current_dir = *dir_ptr;
@@ -751,6 +872,7 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +}
 +EXPORT_SYMBOL(hymofs_inject_entries64);
 +
++/* Update timestamps for injected directories to appear current */
 +void hymofs_spoof_stat(const struct path *path, struct kstat *stat)
 +{
 +    char *buf = (char *)__get_free_page(GFP_KERNEL);
@@ -758,6 +880,7 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +        char *p = d_path(path, buf, PAGE_SIZE);
 +        if (!IS_ERR(p)) {
 +            if (hymofs_should_spoof_mtime(p)) {
++                hymo_log("spoofing stat for %s\n", p);
 +                ktime_get_real_ts64(&stat->mtime);
 +                stat->ctime = stat->mtime;
 +            }
@@ -770,13 +893,14 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +#endif /* CONFIG_HYMOFS */
 diff -ruN src_origin/fs/hymofs.h src_modified/fs/hymofs.h
 --- src_origin/fs/hymofs.h	1970-01-01 08:00:00.000000000 +0800
-+++ src_modified/fs/hymofs.h	2025-12-12 18:39:08.878401843 +0800
-@@ -0,0 +1,96 @@
++++ src_modified/fs/hymofs.h	2025-12-13 17:17:35.484957690 +0800
+@@ -0,0 +1,97 @@
 +#ifndef _LINUX_HYMOFS_H
 +#define _LINUX_HYMOFS_H
 +
 +#include <linux/types.h>
 +#include <linux/list.h>
++#include <linux/atomic.h>
 +
 +#ifdef CONFIG_HYMOFS
 +
@@ -870,15 +994,15 @@ diff -ruN src_origin/fs/hymofs.h src_modified/fs/hymofs.h
 +#endif /* _LINUX_HYMOFS_H */
 diff -ruN src_origin/fs/hymofs_ioctl.h src_modified/fs/hymofs_ioctl.h
 --- src_origin/fs/hymofs_ioctl.h	1970-01-01 08:00:00.000000000 +0800
-+++ src_modified/fs/hymofs_ioctl.h	2025-12-12 19:09:01.634543611 +0800
-@@ -0,0 +1,32 @@
++++ src_modified/fs/hymofs_ioctl.h	2025-12-13 18:53:23.420883699 +0800
+@@ -0,0 +1,33 @@
 +#ifndef _HYMOFS_IOCTL_H
 +#define _HYMOFS_IOCTL_H
 +
 +#include <linux/ioctl.h>
 +
 +#define HYMO_IOC_MAGIC 0xE0
-+#define HYMO_PROTOCOL_VERSION 4
++#define HYMO_PROTOCOL_VERSION 5
 +
 +struct hymo_ioctl_arg {
 +    char *src;
@@ -902,10 +1026,11 @@ diff -ruN src_origin/fs/hymofs_ioctl.h src_modified/fs/hymofs_ioctl.h
 +};
 +
 +#define HYMO_IOC_LIST_RULES  _IOWR(HYMO_IOC_MAGIC, 7, struct hymo_ioctl_list_arg)
++#define HYMO_IOC_SET_DEBUG   _IOW(HYMO_IOC_MAGIC, 8, int)
 +
 +#endif
 diff -ruN src_origin/fs/Kconfig src_modified/fs/Kconfig
---- src_origin/fs/Kconfig	2025-12-12 17:32:32.096934853 +0800
+--- src_origin/fs/Kconfig	2025-12-13 16:03:28.130952817 +0800
 +++ src_modified/fs/Kconfig	2025-12-12 17:32:32.094150462 +0800
 @@ -405,4 +405,10 @@
  config IO_WQ
@@ -919,7 +1044,7 @@ diff -ruN src_origin/fs/Kconfig src_modified/fs/Kconfig
 +
  endmenu
 diff -ruN src_origin/fs/Makefile src_modified/fs/Makefile
---- src_origin/fs/Makefile	2025-12-12 17:32:32.097071002 +0800
+--- src_origin/fs/Makefile	2025-12-13 16:03:28.130952817 +0800
 +++ src_modified/fs/Makefile	2025-12-12 17:32:32.094246643 +0800
 @@ -22,6 +22,8 @@
  		fs_types.o fs_context.o fs_parser.o fsopen.o init.o \
@@ -931,8 +1056,8 @@ diff -ruN src_origin/fs/Makefile src_modified/fs/Makefile
  obj-$(CONFIG_PROC_FS)		+= proc_namespace.o
  obj-$(CONFIG_LEGACY_DIRECT_IO)	+= direct-io.o
 diff -ruN src_origin/fs/namei.c src_modified/fs/namei.c
---- src_origin/fs/namei.c	2025-12-12 17:32:32.097071002 +0800
-+++ src_modified/fs/namei.c	2025-12-12 17:32:32.094246643 +0800
+--- src_origin/fs/namei.c	2025-12-13 16:03:28.202981278 +0800
++++ src_modified/fs/namei.c	2025-12-13 17:19:22.718010038 +0800
 @@ -44,6 +44,9 @@
  
  #include "internal.h"
@@ -943,13 +1068,14 @@ diff -ruN src_origin/fs/namei.c src_modified/fs/namei.c
  
  /* [Feb-1997 T. Schoebel-Theuer]
   * Fundamental changes in the pathname lookup mechanisms (namei)
-@@ -126,8 +129,21 @@
+@@ -126,8 +129,22 @@
  
  #define EMBEDDED_NAME_MAX	(PATH_MAX - offsetof(struct filename, iname))
  
 +#ifdef CONFIG_HYMOFS
 +struct filename *__original_getname_flags(const char __user *filename, int flags, int *empty);
 +
++/* Hook getname_flags to intercept path lookups */
 +struct filename *getname_flags(const char __user *filename, int flags, int *empty)
 +{
 +	struct filename *result = __original_getname_flags(filename, flags, empty);
@@ -966,7 +1092,7 @@ diff -ruN src_origin/fs/namei.c src_modified/fs/namei.c
  	struct filename *result;
  	char *kname;
 diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
---- src_origin/fs/readdir.c	2025-12-12 17:32:32.097071002 +0800
+--- src_origin/fs/readdir.c	2025-12-13 16:03:28.254690749 +0800
 +++ src_modified/fs/readdir.c	2025-12-12 17:32:32.094246643 +0800
 @@ -23,6 +23,9 @@
  #include <linux/uaccess.h>
@@ -1187,8 +1313,8 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  	return error;
  }
 diff -ruN src_origin/fs/stat.c src_modified/fs/stat.c
---- src_origin/fs/stat.c	2025-12-12 17:32:32.097071002 +0800
-+++ src_modified/fs/stat.c	2025-12-12 17:32:32.094246643 +0800
+--- src_origin/fs/stat.c	2025-12-13 16:03:28.270936518 +0800
++++ src_modified/fs/stat.c	2025-12-13 17:21:10.810746599 +0800
 @@ -25,6 +25,9 @@
  
  #include "internal.h"
@@ -1199,11 +1325,12 @@ diff -ruN src_origin/fs/stat.c src_modified/fs/stat.c
  
  /**
   * generic_fillattr - Fill in the basic attributes from the inode struct
-@@ -137,6 +140,9 @@
+@@ -137,6 +140,10 @@
  					    query_flags | AT_GETATTR_NOSEC);
  
  	generic_fillattr(idmap, request_mask, inode, stat);
 +#ifdef CONFIG_HYMOFS
++	/* HymoFS: Spoof timestamps if needed */
 +	hymofs_spoof_stat(path, stat);
 +#endif
  	return 0;

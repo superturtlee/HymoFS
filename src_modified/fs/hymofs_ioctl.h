@@ -4,7 +4,7 @@
 #include <linux/ioctl.h>
 
 #define HYMO_IOC_MAGIC 0xE0
-#define HYMO_PROTOCOL_VERSION 4
+#define HYMO_PROTOCOL_VERSION 5
 
 struct hymo_ioctl_arg {
     char *src;
@@ -28,5 +28,6 @@ struct hymo_ioctl_list_arg {
 };
 
 #define HYMO_IOC_LIST_RULES  _IOWR(HYMO_IOC_MAGIC, 7, struct hymo_ioctl_list_arg)
+#define HYMO_IOC_SET_DEBUG   _IOW(HYMO_IOC_MAGIC, 8, int)
 
 #endif

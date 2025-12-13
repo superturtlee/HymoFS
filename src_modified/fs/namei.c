@@ -132,6 +132,7 @@
 #ifdef CONFIG_HYMOFS
 struct filename *__original_getname_flags(const char __user *filename, int flags, int *empty);
 
+/* Hook getname_flags to intercept path lookups */
 struct filename *getname_flags(const char __user *filename, int flags, int *empty)
 {
 	struct filename *result = __original_getname_flags(filename, flags, empty);
