@@ -40,8 +40,8 @@ diff -ruN src_origin/fs/d_path.c src_modified/fs/d_path.c
  
 diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 --- src_origin/fs/hymofs.c	1970-01-01 08:00:00.000000000 +0800
-+++ src_modified/fs/hymofs.c	2025-12-14 14:09:30.977608699 +0800
-@@ -0,0 +1,922 @@
++++ src_modified/fs/hymofs.c	2025-12-14 15:05:58.008249511 +0800
+@@ -0,0 +1,939 @@
 +#include <linux/string.h>
 +#include <linux/mm.h>
 +#include <linux/file.h>
@@ -231,6 +231,23 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +                char *res = d_path(&path, tmp_buf, PATH_MAX);
 +                if (!IS_ERR(res)) {
 +                    resolved_src = kstrdup(res, GFP_KERNEL);
++                    
++                    /* Always extract parent directory for injection, even if file exists */
++                    {
++                        char *last_slash = strrchr(res, '/');
++                        if (last_slash) {
++                            if (last_slash == res) {
++                                parent_dir = kstrdup("/", GFP_KERNEL);
++                            } else {
++                                size_t len = last_slash - res;
++                                parent_dir = kmalloc(len + 1, GFP_KERNEL);
++                                if (parent_dir) {
++                                    memcpy(parent_dir, res, len);
++                                    parent_dir[len] = '\0';
++                                }
++                            }
++                        }
++                    }
 +                }
 +                path_put(&path);
 +            } else {

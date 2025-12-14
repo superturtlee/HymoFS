@@ -187,6 +187,23 @@ static long hymo_ioctl(struct file *file, unsigned int cmd, unsigned long arg) {
                 char *res = d_path(&path, tmp_buf, PATH_MAX);
                 if (!IS_ERR(res)) {
                     resolved_src = kstrdup(res, GFP_KERNEL);
+                    
+                    /* Always extract parent directory for injection, even if file exists */
+                    {
+                        char *last_slash = strrchr(res, '/');
+                        if (last_slash) {
+                            if (last_slash == res) {
+                                parent_dir = kstrdup("/", GFP_KERNEL);
+                            } else {
+                                size_t len = last_slash - res;
+                                parent_dir = kmalloc(len + 1, GFP_KERNEL);
+                                if (parent_dir) {
+                                    memcpy(parent_dir, res, len);
+                                    parent_dir[len] = '\0';
+                                }
+                            }
+                        }
+                    }
                 }
                 path_put(&path);
             } else {
