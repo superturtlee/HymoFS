@@ -407,8 +407,15 @@ config IO_WQ
 
 config HYMOFS
 	bool "HymoFS support"
-	default y
+	default n
 	help
 	  HymoFS is a kernel-level path manipulation and hiding framework.
+
+config HYMOFS_USE_KSU
+	bool "HymoFS KSU integration"
+	depends on HYMOFS
+	default n
+	help
+	  Enable KernelSU integration for HymoFS.
 
 endmenu

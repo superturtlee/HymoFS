@@ -3,26 +3,47 @@
 ## 概述
 HymoFS 是一个内核级的路径操控和隐藏框架，专为 Android 上的高级覆盖和修改功能而设计。与传统的 OverlayFS 不同，它通过直接 Hook Linux 内核的 VFS（虚拟文件系统）层来工作，从而对用户空间应用程序透明地拦截和修改文件操作。
 
+## 安装与集成
+
+HymoFS 提供了一个智能的 `setup.sh` 脚本，用于轻松集成到您的内核源码中。
+
+### 一键安装
+```bash
+curl -LSs https://raw.githubusercontent.com/Anatdx/HymoFS/main/setup.sh | bash -s defconfig arch/arm64/configs/gki_defconfig
+```
+
+### 功能特性
+*   **自动分支选择**: 自动检测您的内核版本（6.1 或 6.6）并切换到相应的分支（`android14_6.1` 或 `android15_6.6`）。
+*   **KernelSU 检测**: 自动检测 KernelSU 并配置 `CONFIG_HYMOFS_USE_KSU`。
+*   **SUSFS 集成**: 自动检测 SUSFS，如果发现（或指定了 `with-susfs`），则应用兼容补丁。
+
+### 手动选项
+*   `kernel-dir <path>`: 指定内核源码目录。
+*   `branch <name>`: 强制指定 Git 分支。
+*   `with-susfs`: 强制启用 SUSFS 兼容模式。
+
 ## 控制接口
-与内核模块的通信通过字符设备节点进行处理：
-`/dev/hymo_ctl`
+与内核模块的通信通过劫持 `reboot` 系统调用来处理。这种设计避免了创建可见的字符设备节点（如 `/dev/hymo_ctl`），从而提高了隐蔽性。
 
-通信协议使用标准的 `ioctl` 系统调用，定义在 `fs/hymofs_ioctl.h` 中。
+### 机制
+*   **系统调用**: `sys_reboot`
+*   **魔数**: `HYMO_MAGIC1` (0x48594D4F "HYMO") 和 `HYMO_MAGIC2` (0x524F4F54 "ROOT")
+*   **调用方式**: `syscall(SYS_reboot, HYMO_MAGIC1, HYMO_MAGIC2, CMD, ARG)`
 
-### 命令 (IOCTL)
+### 命令
 
-所有命令都通过 `ioctl(fd, CMD, &arg)` 发送，其中 `fd` 是打开 `/dev/hymo_ctl` 的文件描述符。
+所有命令都通过 `reboot` 系统调用的 `cmd` 参数发送。
 
 #### 1. Clear (清除)
 重置所有规则并使内部缓存失效。
-*   **IOCTL**: `HYMO_IOC_CLEAR_ALL`
-*   **参数**: 无
+*   **CMD**: `HYMO_CMD_CLEAR_ALL` (0x48005)
+*   **参数**: 无 (0)
 *   **效果**: 清空所有哈希表（重定向、隐藏、注入）并增加内部版本计数器 (`hymo_version`)。
 
 #### 2. Add (重定向)
 将源路径的访问重定向到目标路径。
-*   **IOCTL**: `HYMO_IOC_ADD_RULE`
-*   **参数**: `struct hymo_ioctl_arg`
+*   **CMD**: `HYMO_CMD_ADD_RULE` (0x48001)
+*   **参数**: 指向 `struct hymo_syscall_arg` 的指针
     *   `src`: 源路径字符串指针
     *   `target`: 目标路径字符串指针
     *   `type`: 文件类型 (DT_DIR=4, DT_REG=8 等)
@@ -30,8 +51,8 @@ HymoFS 是一个内核级的路径操控和隐藏框架，专为 Android 上的�
 
 #### 3. Hide (隐藏)
 从系统中彻底隐藏一个路径。
-*   **IOCTL**: `HYMO_IOC_HIDE_RULE`
-*   **参数**: `struct hymo_ioctl_arg`
+*   **CMD**: `HYMO_CMD_HIDE_RULE` (0x48003)
+*   **参数**: 指向 `struct hymo_syscall_arg` 的指针
     *   `src`: 要隐藏的路径
 *   **效果**:
     *   **访问**: 通过 `open`、`access` 等方式访问时，返回 `-ENOENT` (No such file or directory)。
@@ -52,18 +73,21 @@ HymoFS 是一个内核级的路径操控和隐藏框架，专为 Android 上的�
     *   对于 **Add (重定向)** 规则: 使用 *源* 路径 (例如 `/system/app/YouTube`)。
     *   对于 **Hide (隐藏)** 规则: 使用 *目标* 路径 (例如 `/system/app/Bloatware`)。
     *   **注意**: 注入规则由系统自动管理，当相应的重定向规则被删除时会自动清理。
-*   **IOCTL**: `HYMO_IOC_DEL_RULE`
-*   **参数**: `struct hymo_ioctl_arg`
+*   **CMD**: `HYMO_CMD_DEL_RULE` (0x48002)
+*   **参数**: 指向 `struct hymo_syscall_arg` 的指针
     *   `src`: 规则的键路径
 *   **效果**: 在所有哈希表中搜索给定的键并删除。
 
 #### 6. List (列出规则)
 获取当前所有活动规则的列表。
-*   **操作**: `read()` 系统调用
-*   **机制**: 直接读取 `/dev/hymo_ctl` 设备文件。内核会生成包含所有规则的文本格式数据。
+*   **CMD**: `HYMO_CMD_LIST_RULES` (0x48007)
+*   **参数**: 指向 `struct hymo_syscall_list_arg` 的指针
+    *   `buf`: 用户缓冲区指针
+    *   `size`: 缓冲区大小
+*   **机制**: 内核将包含所有规则的文本格式数据写入用户缓冲区。
 *   **格式**:
     ```text
-    HymoFS Protocol: 6
+    HymoFS Protocol: 7
     HymoFS Config Version: 123
     add /source /target 8
     hide /path/to/hide
@@ -73,8 +97,8 @@ HymoFS 是一个内核级的路径操控和隐藏框架，专为 Android 上的�
 
 #### 7. Merge (合并模式)
 将目标目录的内容“合并”到源目录中，使得源目录既显示原有文件，又显示目标目录的文件。
-*   **IOCTL**: `HYMO_IOC_ADD_MERGE_RULE`
-*   **参数**: `struct hymo_ioctl_arg`
+*   **CMD**: `HYMO_CMD_ADD_MERGE_RULE` (0x48012)
+*   **参数**: 指向 `struct hymo_syscall_arg` 的指针
     *   `src`: 源目录路径
     *   `target`: 目标目录路径
 *   **机制**:
@@ -83,17 +107,18 @@ HymoFS 是一个内核级的路径操控和隐藏框架，专为 Android 上的�
     *   **属性保留**: 对源目录本身的访问（如 `ls -ld /source`）不会被重定向，保留原始属性。
 
 #### 8. Stealth & Debug (隐身与调试)
-*   **Set Debug**: `HYMO_IOC_SET_DEBUG` (8) - 开启/关闭内核日志调试输出。
-*   **Set Stealth**: `HYMO_IOC_SET_STEALTH` (10) - 开启隐身模式，伪装挂载点设备名称。
-*   **Reorder Mount ID**: `HYMO_IOC_REORDER_MNT_ID` (9) - 重排挂载点 ID，防止通过 ID 顺序检测挂载痕迹。
-*   **Hide Overlay Xattrs**: `HYMO_IOC_HIDE_OVERLAY_XATTRS` (11) - 隐藏特定的扩展属性（如 `trusted.overlay.*`），防止 OverlayFS 特征被检测。
+*   **Set Debug**: `HYMO_CMD_SET_DEBUG` (0x48008) - 开启/关闭内核日志调试输出。
+*   **Set Stealth**: `HYMO_CMD_SET_STEALTH` (0x48010) - 开启隐身模式，伪装挂载点设备名称。
+*   **Reorder Mount ID**: `HYMO_CMD_REORDER_MNT_ID` (0x48009) - 重排挂载点 ID，防止通过 ID 顺序检测挂载痕迹。
+*   **Hide Overlay Xattrs**: `HYMO_CMD_HIDE_OVERLAY_XATTRS` (0x48011) - 隐藏特定的扩展属性（如 `trusted.overlay.*`），防止 OverlayFS 特征被检测。
+*   **AVC Log Spoofing**: `HYMO_CMD_SET_AVC_LOG_SPOOFING` (0x48013) - 开启/关闭 AVC 拒绝日志伪装。
 
 ## 实现细节
 
 ### 1. 架构设计
-*   **hymofs_ioctl.h**: 定义了用户空间 API (UAPI)，包括 `ioctl` 命令码和数据结构。用户态工具只需包含此头文件。
+*   **linux/hymo_magic.h**: 定义了用户空间 API (UAPI)，包括魔数、命令码和数据结构。
 *   **hymofs.h**: 内核模块内部实现头文件，包含内核数据结构和函数声明。
-*   **hymofs.c**: 核心逻辑实现，包括字符设备注册、ioctl 处理、哈希表管理等。
+*   **hymofs.c**: 核心逻辑实现，包括系统调用 Hook、哈希表管理等。
 *   **Atomic Config**: 使用 `atomic_t hymo_atomiconfig` 作为全局配置版本计数器。
     *   **性能优化**: 在所有 Hook 入口处首先检查此计数器。如果为 0（无规则），直接返回，实现零开销。
     *   **原子更新**: 任何规则变更（增删改）都会原子递增此计数器，确保多核环境下的配置一致性。

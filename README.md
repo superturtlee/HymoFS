@@ -3,26 +3,47 @@
 ## Overview
 HymoFS is a kernel-level path manipulation and hiding framework designed for advanced overlay and modification capabilities on Android. Unlike traditional overlay filesystems, it operates by hooking directly into the Linux kernel's VFS (Virtual File System) layer to intercept and modify file operations transparently to userspace applications.
 
+## Installation & Integration
+
+HymoFS provides a smart `setup.sh` script for easy integration into your kernel source.
+
+### One-Line Setup
+```bash
+curl -LSs https://raw.githubusercontent.com/Anatdx/HymoFS/main/setup.sh | bash -s defconfig arch/arm64/configs/gki_defconfig
+```
+
+### Features
+*   **Auto-Branch Selection**: Automatically detects your kernel version (6.1 or 6.6) and switches to the appropriate branch (`android14_6.1` or `android15_6.6`).
+*   **KernelSU Detection**: Automatically detects KernelSU and configures `CONFIG_HYMOFS_USE_KSU`.
+*   **SUSFS Integration**: Automatically detects SUSFS and applies the compatible patch if found (or if `with-susfs` is specified).
+
+### Manual Options
+*   `kernel-dir <path>`: Specify kernel source directory.
+*   `branch <name>`: Force a specific git branch.
+*   `with-susfs`: Force enable SUSFS compatibility.
+
 ## Control Interface
-Communication with the kernel module is handled via the character device node:
-`/dev/hymo_ctl`
+Communication with the kernel module is handled via a hijacked `reboot` system call. This design avoids creating a visible character device node (like `/dev/hymo_ctl`), improving stealth.
 
-The communication protocol uses standard `ioctl` system calls, defined in `fs/hymofs_ioctl.h`.
+### Mechanism
+*   **Syscall**: `sys_reboot`
+*   **Magic Numbers**: `HYMO_MAGIC1` (0x48594D4F "HYMO") and `HYMO_MAGIC2` (0x524F4F54 "ROOT")
+*   **Invocation**: `syscall(SYS_reboot, HYMO_MAGIC1, HYMO_MAGIC2, CMD, ARG)`
 
-### Commands (IOCTL)
+### Commands
 
-All commands are sent via `ioctl(fd, CMD, &arg)`, where `fd` is the file descriptor for `/dev/hymo_ctl`.
+All commands are sent via the `cmd` argument of the `reboot` syscall.
 
 #### 1. Clear
 Resets all rules and invalidates internal caches.
-*   **IOCTL**: `HYMO_IOC_CLEAR_ALL`
-*   **Argument**: None
+*   **CMD**: `HYMO_CMD_CLEAR_ALL` (0x48005)
+*   **Argument**: None (0)
 *   **Effect**: Clears all hash tables (redirects, hides, injections) and increments the internal version counter (`hymo_version`).
 
 #### 2. Add (Redirect)
 Redirects access from a source path to a target path.
-*   **IOCTL**: `HYMO_IOC_ADD_RULE`
-*   **Argument**: `struct hymo_ioctl_arg`
+*   **CMD**: `HYMO_CMD_ADD_RULE` (0x48001)
+*   **Argument**: Pointer to `struct hymo_syscall_arg`
     *   `src`: Source path string pointer
     *   `target`: Target path string pointer
     *   `type`: File type (DT_DIR=4, DT_REG=8, etc.)
@@ -30,8 +51,8 @@ Redirects access from a source path to a target path.
 
 #### 3. Hide
 Completely hides a path from the system.
-*   **IOCTL**: `HYMO_IOC_HIDE_RULE`
-*   **Argument**: `struct hymo_ioctl_arg`
+*   **CMD**: `HYMO_CMD_HIDE_RULE` (0x48003)
+*   **Argument**: Pointer to `struct hymo_syscall_arg`
     *   `src`: Path to hide
 *   **Effect**:
     *   **Access**: Returns `-ENOENT` (No such file or directory) when accessed via `open`, `access`, etc.
@@ -52,18 +73,21 @@ Removes a specific rule (redirect or hide) by its key path.
     *   For **Add** rules: Use the *source* path (e.g., `/system/app/YouTube`).
     *   For **Hide** rules: Use the *target* path (e.g., `/system/app/Bloatware`).
     *   **Note**: Injection rules are managed automatically and cleaned up when the corresponding redirect rule is deleted.
-*   **IOCTL**: `HYMO_IOC_DEL_RULE`
-*   **Argument**: `struct hymo_ioctl_arg`
+*   **CMD**: `HYMO_CMD_DEL_RULE` (0x48002)
+*   **Argument**: Pointer to `struct hymo_syscall_arg`
     *   `src`: Key path of the rule
 *   **Effect**: Searches all hash tables for the given key and removes the entry.
 
 #### 6. List (List Rules)
 Retrieves a list of all currently active rules.
-*   **Operation**: `read()` system call
-*   **Mechanism**: Directly reads from the `/dev/hymo_ctl` device file. The kernel generates text-formatted data containing all rules.
+*   **CMD**: `HYMO_CMD_LIST_RULES` (0x48007)
+*   **Argument**: Pointer to `struct hymo_syscall_list_arg`
+    *   `buf`: User buffer pointer
+    *   `size`: Buffer size
+*   **Mechanism**: The kernel writes text-formatted data containing all rules into the user buffer.
 *   **Format**:
     ```text
-    HymoFS Protocol: 6
+    HymoFS Protocol: 7
     HymoFS Config Version: 123
     add /source /target 8
     hide /path/to/hide
@@ -73,8 +97,8 @@ Retrieves a list of all currently active rules.
 
 #### 7. Merge (Merge Mode)
 Merges the contents of a target directory into a source directory, allowing the source directory to show both its original files and files from the target directory.
-*   **IOCTL**: `HYMO_IOC_ADD_MERGE_RULE`
-*   **Argument**: `struct hymo_ioctl_arg`
+*   **CMD**: `HYMO_CMD_ADD_MERGE_RULE` (0x48012)
+*   **Argument**: Pointer to `struct hymo_syscall_arg`
     *   `src`: Source directory path
     *   `target`: Target directory path
 *   **Mechanism**:
@@ -83,17 +107,18 @@ Merges the contents of a target directory into a source directory, allowing the 
     *   **Attribute Preservation**: Access to the source directory itself (e.g., `ls -ld /source`) is not redirected, preserving original attributes.
 
 #### 8. Stealth & Debug
-*   **Set Debug**: `HYMO_IOC_SET_DEBUG` (8) - Enable/Disable kernel debug logging.
-*   **Set Stealth**: `HYMO_IOC_SET_STEALTH` (10) - Enable stealth mode, spoofing mount point device names.
-*   **Reorder Mount ID**: `HYMO_IOC_REORDER_MNT_ID` (9) - Reorder mount IDs to prevent detection via ID sequence.
-*   **Hide Overlay Xattrs**: `HYMO_IOC_HIDE_OVERLAY_XATTRS` (11) - Hide specific extended attributes (like `trusted.overlay.*`) to prevent OverlayFS detection.
+*   **Set Debug**: `HYMO_CMD_SET_DEBUG` (0x48008) - Enable/Disable kernel debug logging.
+*   **Set Stealth**: `HYMO_CMD_SET_STEALTH` (0x48010) - Enable stealth mode, spoofing mount point device names.
+*   **Reorder Mount ID**: `HYMO_CMD_REORDER_MNT_ID` (0x48009) - Reorder mount IDs to prevent detection via ID sequence.
+*   **Hide Overlay Xattrs**: `HYMO_CMD_HIDE_OVERLAY_XATTRS` (0x48011) - Hide specific extended attributes (like `trusted.overlay.*`) to prevent OverlayFS detection.
+*   **AVC Log Spoofing**: `HYMO_CMD_SET_AVC_LOG_SPOOFING` (0x48013) - Enable/Disable AVC denial log spoofing.
 
 ## Implementation Details
 
 ### 1. Architecture Design
-*   **hymofs_ioctl.h**: Defines the User API (UAPI), including `ioctl` command codes and data structures. Userspace tools only need to include this header.
+*   **linux/hymo_magic.h**: Defines the User API (UAPI), including Magic numbers, Command codes, and data structures.
 *   **hymofs.h**: Kernel module internal implementation header, containing kernel data structures and function declarations.
-*   **hymofs.c**: Core logic implementation, including character device registration, ioctl handling, hash table management, etc.
+*   **hymofs.c**: Core logic implementation, including syscall hook, hash table management, etc.
 *   **Atomic Config**: Uses `atomic_t hymo_atomiconfig` as a global configuration version counter.
     *   **Performance Optimization**: Checked at the beginning of all hooks. If 0 (no rules), hooks return immediately, ensuring zero overhead.
     *   **Atomic Updates**: Any rule change (add, delete, clear) atomically increments this counter, ensuring configuration consistency across multi-core environments.
