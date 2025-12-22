@@ -44,6 +44,8 @@
 
 #include "internal.h"
 #include "mount.h"
+
+
 #ifdef CONFIG_HYMOFS
 #include "hymofs.h"
 #endif
@@ -3821,6 +3823,7 @@ static struct file *path_openat(struct nameidata *nd,
 	}
 	return ERR_PTR(error);
 }
+
 
 struct file *do_filp_open(int dfd, struct filename *pathname,
 		const struct open_flags *op)

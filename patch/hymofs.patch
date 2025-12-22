@@ -1,6 +1,6 @@
 diff -ruN src_origin/fs/d_path.c src_modified/fs/d_path.c
 --- src_origin/fs/d_path.c	2025-12-20 03:50:29.912427024 +0800
-+++ src_modified/fs/d_path.c	2025-12-21 05:07:29.748083212 +0800
++++ src_modified/fs/d_path.c	2025-12-22 13:53:25.571485831 +0800
 @@ -8,6 +8,9 @@
  #include <linux/prefetch.h>
  #include "mount.h"
@@ -21,7 +21,7 @@ diff -ruN src_origin/fs/d_path.c src_modified/fs/d_path.c
  
  static void get_fs_root_rcu(struct fs_struct *fs, struct path *root)
  {
-@@ -291,7 +297,31 @@
+@@ -291,7 +297,52 @@
  	prepend_path(path, &root, &b);
  	rcu_read_unlock();
  
@@ -29,21 +29,42 @@ diff -ruN src_origin/fs/d_path.c src_modified/fs/d_path.c
 +    {
 +        char *res = extract_string(&b);
 +
++        /* Fast exit if no rules */
++        if (atomic_read(&hymo_atomiconfig) == 0)
++            return res;
++
 +        /* Allow hymod to see real paths for management */
 +        if (strcmp(current->comm, "hymod") == 0)
 +            return res;
 +
 +        if (!IS_ERR(res)) {
-+            char *src = hymofs_reverse_lookup(res);
-+            if (src) {
-+                if (strlen(src) < buflen) {
-+                    /* Overwrite with source path for masking */
-+                    strscpy(buf, src, buflen);
-+                    kfree(src);
-+                    return buf;
++            /* Use stack buffer for lookup path to avoid allocation if possible */
++            char temp_path[256];
++            char *lookup_path = res;
++            int len = strlen(res);
++            bool allocated = false;
++            
++            /* We need to copy res because we might overwrite it when writing to buf */
++            if (len < sizeof(temp_path)) {
++                memcpy(temp_path, res, len + 1);
++                lookup_path = temp_path;
++            } else {
++                lookup_path = kmalloc(len + 1, GFP_KERNEL);
++                if (lookup_path) {
++                    memcpy(lookup_path, res, len + 1);
++                    allocated = true;
++                } else {
++                    lookup_path = res; /* Fallback, risky but rare */
 +                }
-+                kfree(src);
 +            }
++            
++            /* Write directly to buf */
++            if (hymofs_reverse_lookup(lookup_path, buf, buflen) > 0) {
++                if (allocated) kfree(lookup_path);
++                return buf;
++            }
++            
++            if (allocated) kfree(lookup_path);
 +        }
 +	    return res;
 +    }
@@ -55,8 +76,8 @@ diff -ruN src_origin/fs/d_path.c src_modified/fs/d_path.c
  
 diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 --- src_origin/fs/hymofs.c	1970-01-01 08:00:00.000000000 +0800
-+++ src_modified/fs/hymofs.c	2025-12-21 05:05:35.080579326 +0800
-@@ -0,0 +1,1757 @@
++++ src_modified/fs/hymofs.c	2025-12-22 14:20:37.089662947 +0800
+@@ -0,0 +1,1761 @@
 +#include <linux/string.h>
 +#include <linux/mm.h>
 +#include <linux/file.h>
@@ -144,6 +165,8 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +EXPORT_SYMBOL(hymo_atomiconfig);
 +
 +static bool hymo_debug_enabled = false;
++module_param(hymo_debug_enabled, bool, 0644);
++MODULE_PARM_DESC(hymo_debug_enabled, "Enable debug logging");
 +static bool hymo_stealth_enabled = true; // Default to true for security
 +
 +#define hymo_log(fmt, ...) do { \
@@ -865,8 +888,7 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +    struct hymo_merge_entry *merge_entry;
 +    u32 hash;
 +    char *target = NULL;
-+    char *path_buf = NULL;
-+    char *p;
++    const char *p;
 +    size_t path_len;
 +    struct list_head candidates;
 +    struct hymo_merge_target_node *cand, *tmp;
@@ -888,54 +910,47 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +        }
 +    }
 +    
-+    // Merge Rule Lookup (Walk up)
-+    // We need a copy to modify, but we are in spinlock.
-+    // Allocate buffer outside? No, we can't sleep.
-+    // Use GFP_ATOMIC.
-+    path_buf = kstrdup(pathname, GFP_ATOMIC);
-+    if (!path_buf) {
-+        spin_unlock_irqrestore(&hymo_lock, flags);
-+        return NULL;
-+    }
-+    
-+    p = path_buf + path_len;
-+    while (p > path_buf) {
++    // Merge Rule Lookup (Walk up without allocation)
++    p = pathname + path_len;
++    while (p > pathname) {
 +        // Find last slash
-+        while (p > path_buf && *p != '/') p--;
-+        if (p == path_buf && *p != '/') break; // No more slashes
++        while (p > pathname && *p != '/') p--;
++        if (p == pathname && *p != '/') break; // No more slashes
 +        
-+        // Terminate to get parent
-+        if (p == path_buf) { // Root
++        // Terminate to get parent (virtual)
++        size_t current_len = p - pathname;
++        if (current_len == 0) { // Root
 +             // Handle root if needed, but usually we don't merge root
 +             break;
 +        }
-+        *p = '\0';
 +        
-+        // Lookup parent in merge_dirs
-+        hash = full_name_hash(NULL, path_buf, strlen(path_buf));
++        // Lookup parent in merge_dirs using substring hash
++        hash = full_name_hash(NULL, pathname, current_len);
 +        hash_for_each_possible(hymo_merge_dirs, merge_entry, node, hash) {
-+            if (strcmp(merge_entry->src, path_buf) == 0) {
++            // Compare substring
++            if (strlen(merge_entry->src) == current_len && 
++                strncmp(merge_entry->src, pathname, current_len) == 0) {
++                
 +                // Found merge rule!
 +                
 +                /* If the path is just the merge directory itself (or . / ..), 
 +                   do NOT redirect. We want to open the original directory 
 +                   so readdir can merge entries. */
-+                char *suffix = (char *)pathname + (p - path_buf);
-+                if (strcmp(suffix, "/.") == 0 || strcmp(suffix, "/..") == 0) {
++                const char *suffix = pathname + current_len;
++                if (suffix[0] == '\0' || strcmp(suffix, "/.") == 0 || strcmp(suffix, "/..") == 0) {
 +                    continue;
 +                }
 +
 +                // Construct candidate: target + (pathname - parent)
-+                
 +                size_t target_len = strlen(merge_entry->target);
-+                size_t suffix_len = path_len - (p - path_buf); // includes leading slash
++                size_t suffix_len = path_len - current_len; // includes leading slash
 +                
 +                cand = kmalloc(sizeof(*cand), GFP_ATOMIC);
 +                if (cand) {
 +                    cand->target = kmalloc(target_len + suffix_len + 1, GFP_ATOMIC);
 +                    if (cand->target) {
 +                        strcpy(cand->target, merge_entry->target);
-+                        strcat(cand->target, pathname + (p - path_buf));
++                        strcat(cand->target, suffix);
 +                        list_add_tail(&cand->list, &candidates);
 +                    } else {
 +                        kfree(cand);
@@ -948,9 +963,11 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +        if (!list_empty(&candidates)) {
 +            break;
 +        }
++        
++        // Move p back to continue loop (skip current slash)
++        if (p > pathname) p--;
 +    }
 +    
-+    kfree(path_buf);
 +    spin_unlock_irqrestore(&hymo_lock, flags);
 +    
 +    // Check candidates
@@ -973,18 +990,18 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +}
 +EXPORT_SYMBOL(__hymofs_resolve_target);
 +
-+/* Returns kstrdup'd source if target found, NULL otherwise. Caller must kfree. */
-+char *__hymofs_reverse_lookup(const char *pathname)
++/* Returns length of written string, or -1 if not found/error. Writes to buf. */
++int __hymofs_reverse_lookup(const char *pathname, char *buf, size_t buflen)
 +{
 +    unsigned long flags;
 +    struct hymo_entry *entry;
 +    struct hymo_merge_entry *merge_entry;
 +    u32 hash;
 +    int bkt;
-+    char *src = NULL;
++    int ret = -1;
 +
-+    if (atomic_read(&hymo_atomiconfig) == 0) return NULL;
-+    if (!pathname) return NULL;
++    if (atomic_read(&hymo_atomiconfig) == 0) return -1;
++    if (!pathname || !buf) return -1;
 +
 +    hash = full_name_hash(NULL, pathname, strlen(pathname));
 +
@@ -993,7 +1010,8 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +    /* Check 1-to-1 mappings */
 +    hash_for_each_possible(hymo_targets, entry, target_node, hash) {
 +        if (strcmp(entry->target, pathname) == 0) {
-+            src = kstrdup(entry->src, GFP_ATOMIC);
++            if (strscpy(buf, entry->src, buflen) < 0) ret = -ENAMETOOLONG;
++            else ret = strlen(buf);
 +            goto out;
 +        }
 +    }
@@ -1007,23 +1025,26 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +                size_t src_len = strlen(merge_entry->src);
 +                size_t suffix_len = strlen(pathname) - target_len;
 +                
-+                src = kmalloc(src_len + suffix_len + 1, GFP_ATOMIC);
-+                if (src) {
-+                    strcpy(src, merge_entry->src);
-+                    strcat(src, pathname + target_len);
-+                    goto out;
++                if (src_len + suffix_len + 1 > buflen) {
++                    ret = -ENAMETOOLONG;
++                } else {
++                    memcpy(buf, merge_entry->src, src_len);
++                    memcpy(buf + src_len, pathname + target_len, suffix_len);
++                    buf[src_len + suffix_len] = '\0';
++                    ret = src_len + suffix_len;
 +                }
++                goto out;
 +            }
 +        }
 +    }
 +
 +out:
 +    spin_unlock_irqrestore(&hymo_lock, flags);
-+    return src;
++    return ret;
 +}
 +EXPORT_SYMBOL(__hymofs_reverse_lookup);
 +
-+bool __hymofs_should_hide(const char *pathname)
++bool __hymofs_should_hide(const char *pathname, size_t len)
 +{
 +    unsigned long flags;
 +    struct hymo_hide_entry *entry;
@@ -1038,11 +1059,14 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +
 +    /* Hide control interface from non-root if stealth is enabled */
 +    if (hymo_stealth_enabled) {
-+        if (strcmp(pathname, HYMO_CTL_NAME) == 0 || strcmp(pathname, HYMO_CTL_PATH) == 0) return true;
-+        if (strcmp(pathname, HYMO_MIRROR_NAME) == 0 || strcmp(pathname, HYMO_MIRROR_PATH) == 0) return true;
++        /* Fast check using length first */
++        if (len == sizeof(HYMO_CTL_NAME)-1 && strcmp(pathname, HYMO_CTL_NAME) == 0) return true;
++        if (len == sizeof(HYMO_CTL_PATH)-1 && strcmp(pathname, HYMO_CTL_PATH) == 0) return true;
++        if (len == sizeof(HYMO_MIRROR_NAME)-1 && strcmp(pathname, HYMO_MIRROR_NAME) == 0) return true;
++        if (len == sizeof(HYMO_MIRROR_PATH)-1 && strcmp(pathname, HYMO_MIRROR_PATH) == 0) return true;
 +    }
 +
-+    hash = full_name_hash(NULL, pathname, strlen(pathname));
++    hash = full_name_hash(NULL, pathname, len);
 +    spin_lock_irqsave(&hymo_lock, flags);
 +    hash_for_each_possible(hymo_hide_paths, entry, node, hash) {
 +        if (strcmp(entry->path, pathname) == 0) {
@@ -1289,6 +1313,7 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +    if (IS_ERR(result)) return result;
 +
 +    /* HymoFS Path Hiding Hook */
++    /* Use fast path inline check first */
 +    if (hymofs_should_hide(result->name)) {
 +        putname(result);
 +        /* Return ENOENT directly */
@@ -1296,7 +1321,7 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +    } else {
 +        if (result->name[0] != '/') {
 +            /* Handle relative paths by prepending CWD */
-+            char *buf = (char *)__get_free_page(GFP_KERNEL);
++            char *buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
 +            if (buf) {
 +                struct path pwd;
 +                /* get_fs_pwd is not exported in newer kernels, use manual locking */
@@ -1334,14 +1359,15 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +                        /* Try to resolve the constructed absolute path */
 +                        target = hymofs_resolve_target(cwd);
 +                        
-+                        /* Debug logging */
-+                        if (strstr(cwd, "MonetCoolapk.apk")) {
-+                            hymo_log("getname relative fix: %s -> %s\n", cwd, target ? target : "NULL");
++                        /* Debug logging for relative path resolution */
++                        if (!target && strstr(name, "MonetCoolapk.apk")) {
++                            hymo_log("getname failed: cwd='%s', name='%s', constructed='%s'\n", 
++                                     cwd, name, cwd);
 +                        }
 +                    }
 +                }
 +                path_put(&pwd);
-+                free_page((unsigned long)buf);
++                kfree(buf);
 +            }
 +        }
 +        
@@ -1666,65 +1692,62 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +void hymofs_spoof_stat(const struct path *path, struct kstat *stat)
 +{
 +    if (!hymo_stealth_enabled) return;
++    if (atomic_read(&hymo_atomiconfig) == 0) return;
 +
-+    char *buf = (char *)__get_free_page(GFP_KERNEL);
++    char *buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
 +    if (buf && path && path->dentry) {
 +        /* Use d_absolute_path to bypass our own d_path hook and get the real physical path */
 +        char *p = d_absolute_path(path, buf, PAGE_SIZE);
 +        if (!IS_ERR(p)) {
 +            /* HymoFS: Check if this path is a merge target (physical path) and map back to virtual */
-+            char *virtual_path = __hymofs_reverse_lookup(p);
++            char *virtual_buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
 +            bool is_injected = false;
 +            
-+            if (virtual_path) {
-+                /* Use virtual path for spoofing checks */
-+                hymo_log("spoofing merge target %s -> %s\n", p, virtual_path);
-+                /* Copy virtual path to buffer for subsequent checks */
-+                strscpy(buf, virtual_path, PAGE_SIZE);
-+                p = buf;
-+                kfree(virtual_path);
-+                is_injected = true;
++            if (virtual_buf) {
++                if (__hymofs_reverse_lookup(p, virtual_buf, PAGE_SIZE) > 0) {
++                    hymo_log("spoofing merge target %s -> %s\n", p, virtual_buf);
++                    p = virtual_buf; /* Switch to virtual path */
++                    is_injected = true;
++                }
 +            }
 +
 +            /* Only spoof attributes for files we injected */
 +            if (is_injected) {
-+                /* HymoFS: Recursive parent lookup to find real device ID and attributes */
-+                /* This is safe here because we only do it for injected files, avoiding bootloops */
-+                char *search_path = kstrdup(p, GFP_KERNEL);
-+                if (search_path) {
-+                    char *curr = search_path;
-+                    struct path parent_path;
-+                    
-+                    while (curr) {
-+                        char *last_slash = strrchr(curr, '/');
-+                        if (!last_slash) break;
-+                        
-+                        if (last_slash == curr) {
-+                            /* Parent is root */
-+                            if (kern_path("/", LOOKUP_FOLLOW, &parent_path) == 0) {
-+                                struct inode *inode = d_backing_inode(parent_path.dentry);
-+                                stat->uid = inode->i_uid;
-+                                stat->gid = inode->i_gid;
-+                                stat->dev = inode->i_sb->s_dev;
-+                                hymo_log("spoofing attrs for %s from root: dev=%u\n", p, stat->dev);
-+                                path_put(&parent_path);
-+                            }
-+                            break;
-+                        }
-+                        
-+                        *last_slash = '\0';
-+                        
-+                        if (kern_path(curr, LOOKUP_FOLLOW, &parent_path) == 0) {
++                /* Always look up parent to get correct fs attributes (dev, uid, gid) */
++                char *last_slash = strrchr(p, '/');
++                if (last_slash) {
++                    if (last_slash == p) {
++                        /* Parent is root */
++                        struct path parent_path;
++                        if (kern_path("/", LOOKUP_FOLLOW, &parent_path) == 0) {
 +                            struct inode *inode = d_backing_inode(parent_path.dentry);
 +                            stat->uid = inode->i_uid;
 +                            stat->gid = inode->i_gid;
 +                            stat->dev = inode->i_sb->s_dev;
-+                            hymo_log("spoofing attrs for %s from %s: dev=%u\n", p, curr, stat->dev);
 +                            path_put(&parent_path);
-+                            break;
 +                        }
++                    } else {
++                        *last_slash = '\0';
++                        struct path parent_path;
++                        if (kern_path(p, LOOKUP_FOLLOW, &parent_path) == 0) {
++                            struct inode *inode = d_backing_inode(parent_path.dentry);
++                            stat->uid = inode->i_uid;
++                            stat->gid = inode->i_gid;
++                            stat->dev = inode->i_sb->s_dev;
++                            path_put(&parent_path);
++                        } else {
++                            /* Fallback if parent lookup fails (rare) */
++                            if (strncmp(p, "/system/", 8) == 0 || 
++                                strncmp(p, "/vendor/", 8) == 0 ||
++                                strncmp(p, "/product/", 9) == 0 ||
++                                strncmp(p, "/odm/", 5) == 0 ||
++                                strncmp(p, "/apex/", 6) == 0) {
++                                stat->uid = KUIDT_INIT(0);
++                                stat->gid = KGIDT_INIT(0);
++                            }
++                        }
++                        *last_slash = '/';
 +                    }
-+                    kfree(search_path);
 +                }
 +                /* Obfuscate inode for injected files too */
 +                stat->ino ^= 0x48594D4F;
@@ -1746,8 +1769,10 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +                    stat->gid = KGIDT_INIT(0);
 +                }
 +            }
++            
++            if (virtual_buf) kfree(virtual_buf);
 +        }
-+        free_page((unsigned long)buf);
++        kfree(buf);
 +    }
 +}
 +EXPORT_SYMBOL(hymofs_spoof_stat);
@@ -1816,8 +1841,8 @@ diff -ruN src_origin/fs/hymofs.c src_modified/fs/hymofs.c
 +#endif /* CONFIG_HYMOFS */
 diff -ruN src_origin/fs/hymofs.h src_modified/fs/hymofs.h
 --- src_origin/fs/hymofs.h	1970-01-01 08:00:00.000000000 +0800
-+++ src_modified/fs/hymofs.h	2025-12-21 05:06:15.511661033 +0800
-@@ -0,0 +1,122 @@
++++ src_modified/fs/hymofs.h	2025-12-22 13:53:25.605979066 +0800
+@@ -0,0 +1,124 @@
 +#ifndef _LINUX_HYMOFS_H
 +#define _LINUX_HYMOFS_H
 +
@@ -1870,8 +1895,8 @@ diff -ruN src_origin/fs/hymofs.h src_modified/fs/hymofs.h
 +struct filename *hymofs_handle_getname(struct filename *result);
 +
 +char *__hymofs_resolve_target(const char *pathname);
-+char *__hymofs_reverse_lookup(const char *pathname);
-+bool __hymofs_should_hide(const char *pathname);
++int __hymofs_reverse_lookup(const char *pathname, char *buf, size_t buflen);
++bool __hymofs_should_hide(const char *pathname, size_t len);
 +bool __hymofs_should_spoof_mtime(const char *pathname);
 +int hymofs_populate_injected_list(const char *dir_path, struct dentry *parent, struct list_head *head);
 +
@@ -1900,16 +1925,18 @@ diff -ruN src_origin/fs/hymofs.h src_modified/fs/hymofs.h
 +    return __hymofs_resolve_target(pathname);
 +}
 +
-+static inline char *hymofs_reverse_lookup(const char *pathname)
++static inline int hymofs_reverse_lookup(const char *pathname, char *buf, size_t buflen)
 +{
-+    if (atomic_read(&hymo_atomiconfig) == 0) return NULL;
-+    return __hymofs_reverse_lookup(pathname);
++    if (atomic_read(&hymo_atomiconfig) == 0) return -1;
++    return __hymofs_reverse_lookup(pathname, buf, buflen);
 +}
 +
 +static inline bool hymofs_should_hide(const char *pathname)
 +{
 +    if (atomic_read(&hymo_atomiconfig) == 0) return false;
-+    return __hymofs_should_hide(pathname);
++    /* Fast path: check for NULL or empty */
++    if (!pathname || !*pathname) return false;
++    return __hymofs_should_hide(pathname, strlen(pathname));
 +}
 +
 +static inline bool hymofs_should_spoof_mtime(const char *pathname)
@@ -1942,7 +1969,7 @@ diff -ruN src_origin/fs/hymofs.h src_modified/fs/hymofs.h
 +#endif /* _LINUX_HYMOFS_H */
 diff -ruN src_origin/fs/hymofs_ioctl.h src_modified/fs/hymofs_ioctl.h
 --- src_origin/fs/hymofs_ioctl.h	1970-01-01 08:00:00.000000000 +0800
-+++ src_modified/fs/hymofs_ioctl.h	2025-12-21 05:07:04.909526878 +0800
++++ src_modified/fs/hymofs_ioctl.h	2025-12-22 13:53:25.610533330 +0800
 @@ -0,0 +1,40 @@
 +#ifndef _HYMOFS_IOCTL_H
 +#define _HYMOFS_IOCTL_H
@@ -1986,7 +2013,7 @@ diff -ruN src_origin/fs/hymofs_ioctl.h src_modified/fs/hymofs_ioctl.h
 +#endif
 diff -ruN src_origin/fs/Kconfig src_modified/fs/Kconfig
 --- src_origin/fs/Kconfig	2025-12-20 03:50:29.882762967 +0800
-+++ src_modified/fs/Kconfig	2025-12-18 11:54:21.048032166 +0800
++++ src_modified/fs/Kconfig	2025-12-22 13:53:09.817628129 +0800
 @@ -405,4 +405,10 @@
  config IO_WQ
  	bool
@@ -2000,7 +2027,7 @@ diff -ruN src_origin/fs/Kconfig src_modified/fs/Kconfig
  endmenu
 diff -ruN src_origin/fs/Makefile src_modified/fs/Makefile
 --- src_origin/fs/Makefile	2025-12-20 03:50:29.882762967 +0800
-+++ src_modified/fs/Makefile	2025-12-18 11:54:21.048032166 +0800
++++ src_modified/fs/Makefile	2025-12-22 13:53:25.620710328 +0800
 @@ -22,6 +22,8 @@
  		fs_types.o fs_context.o fs_parser.o fsopen.o init.o \
  		kernel_read_file.o mnt_idmapping.o remap_range.o
@@ -2012,18 +2039,20 @@ diff -ruN src_origin/fs/Makefile src_modified/fs/Makefile
  obj-$(CONFIG_LEGACY_DIRECT_IO)	+= direct-io.o
 diff -ruN src_origin/fs/namei.c src_modified/fs/namei.c
 --- src_origin/fs/namei.c	2025-12-20 03:50:29.957837631 +0800
-+++ src_modified/fs/namei.c	2025-12-18 11:54:21.048400120 +0800
-@@ -44,6 +44,9 @@
- 
++++ src_modified/fs/namei.c	2025-12-22 13:53:25.584425022 +0800
+@@ -45,6 +45,11 @@
  #include "internal.h"
  #include "mount.h"
+ 
++
 +#ifdef CONFIG_HYMOFS
 +#include "hymofs.h"
 +#endif
- 
++
  /* [Feb-1997 T. Schoebel-Theuer]
   * Fundamental changes in the pathname lookup mechanisms (namei)
-@@ -126,8 +129,22 @@
+  * were necessary because of omirr.  The reason is that omirr needs
+@@ -126,8 +131,22 @@
  
  #define EMBEDDED_NAME_MAX	(PATH_MAX - offsetof(struct filename, iname))
  
@@ -2046,20 +2075,30 @@ diff -ruN src_origin/fs/namei.c src_modified/fs/namei.c
  {
  	struct filename *result;
  	char *kname;
+@@ -3805,6 +3824,7 @@
+ 	return ERR_PTR(error);
+ }
+ 
++
+ struct file *do_filp_open(int dfd, struct filename *pathname,
+ 		const struct open_flags *op)
+ {
 diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
 --- src_origin/fs/readdir.c	2025-12-20 03:50:30.013307307 +0800
-+++ src_modified/fs/readdir.c	2025-12-18 11:54:21.049400104 +0800
-@@ -23,6 +23,9 @@
- #include <linux/uaccess.h>
++++ src_modified/fs/readdir.c	2025-12-22 13:53:25.590578706 +0800
+@@ -24,6 +24,11 @@
  
  #include <asm/unaligned.h>
+ 
++
 +#ifdef CONFIG_HYMOFS
 +#include "hymofs.h"
 +#endif
- 
++
  /*
   * Some filesystems were never converted to '->iterate_shared()'
-@@ -172,6 +175,9 @@
+  * and their directory iterators want the inode lock held for
+@@ -172,6 +177,9 @@
  
  struct readdir_callback {
  	struct dir_context ctx;
@@ -2069,7 +2108,7 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  	struct old_linux_dirent __user * dirent;
  	int result;
  };
-@@ -225,11 +231,17 @@
+@@ -225,11 +233,17 @@
  
  	if (!f.file)
  		return -EBADF;
@@ -2087,7 +2126,7 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  	fdput_pos(f);
  	return error;
  }
-@@ -249,10 +261,16 @@
+@@ -249,10 +263,16 @@
  
  struct getdents_callback {
  	struct dir_context ctx;
@@ -2104,13 +2143,15 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  };
  
  static bool filldir(struct dir_context *ctx, const char *name, int namlen,
-@@ -266,12 +284,19 @@
+@@ -266,12 +286,21 @@
  		sizeof(long));
  	int prev_reclen;
  
 +#ifdef CONFIG_HYMOFS
 +    if (hymofs_check_filldir(&buf->hymo, name, strlen(name))) return true;
 +#endif
++
++
  	buf->error = verify_dirent_name(name, namlen);
  	if (unlikely(buf->error))
  		return false;
@@ -2125,7 +2166,15 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  	d_ino = ino;
  	if (sizeof(d_ino) < sizeof(ino) && d_ino != ino) {
  		buf->error = -EOVERFLOW;
-@@ -312,12 +337,29 @@
+@@ -280,6 +309,7 @@
+ 	prev_reclen = buf->prev_reclen;
+ 	if (prev_reclen && signal_pending(current))
+ 		return false;
++
+ 	dirent = buf->current_dir;
+ 	prev = (void __user *) dirent - prev_reclen;
+ 	if (!user_write_access_begin(prev, reclen + prev_reclen))
+@@ -312,12 +342,29 @@
  		.ctx.actor = filldir,
  		.count = count,
  		.current_dir = dirent
@@ -2155,7 +2204,7 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  
  	error = iterate_dir(f.file, &buf.ctx);
  	if (error >= 0)
-@@ -331,16 +373,31 @@
+@@ -331,16 +378,31 @@
  		else
  			error = count - buf.count;
  	}
@@ -2187,13 +2236,15 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  };
  
  static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
-@@ -353,12 +410,19 @@
+@@ -353,15 +415,25 @@
  		sizeof(u64));
  	int prev_reclen;
  
 +#ifdef CONFIG_HYMOFS
 +	if (hymofs_check_filldir(&buf->hymo, name, namlen)) return true;
 +#endif
++
++
  	buf->error = verify_dirent_name(name, namlen);
  	if (unlikely(buf->error))
  		return false;
@@ -2208,7 +2259,11 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  	prev_reclen = buf->prev_reclen;
  	if (prev_reclen && signal_pending(current))
  		return false;
-@@ -395,6 +459,9 @@
++
+ 	dirent = buf->current_dir;
+ 	prev = (void __user *)dirent - prev_reclen;
+ 	if (!user_write_access_begin(prev, reclen + prev_reclen))
+@@ -395,6 +467,9 @@
  		.ctx.actor = filldir64,
  		.count = count,
  		.current_dir = dirent
@@ -2218,7 +2273,7 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  	};
  	int error;
  
-@@ -402,6 +469,20 @@
+@@ -402,6 +477,21 @@
  	if (!f.file)
  		return -EBADF;
  
@@ -2236,10 +2291,11 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
 +		return error;
 +	}
 +#endif
++
  	error = iterate_dir(f.file, &buf.ctx);
  	if (error >= 0)
  		error = buf.error;
-@@ -415,6 +496,15 @@
+@@ -415,6 +505,15 @@
  		else
  			error = count - buf.count;
  	}
@@ -2255,7 +2311,7 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  	fdput_pos(f);
  	return error;
  }
-@@ -429,6 +519,9 @@
+@@ -429,6 +528,9 @@
  
  struct compat_readdir_callback {
  	struct dir_context ctx;
@@ -2265,13 +2321,14 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  	struct compat_old_linux_dirent __user *dirent;
  	int result;
  };
-@@ -484,10 +577,16 @@
+@@ -484,10 +586,17 @@
  	if (!f.file)
  		return -EBADF;
  
 +#ifdef CONFIG_HYMOFS
 +	hymofs_prepare_readdir(&buf.hymo, f.file);
 +#endif
++
  	error = iterate_dir(f.file, &buf.ctx);
  	if (buf.result)
  		error = buf.result;
@@ -2282,7 +2339,7 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  	fdput_pos(f);
  	return error;
  }
-@@ -501,6 +600,9 @@
+@@ -501,6 +610,9 @@
  
  struct compat_getdents_callback {
  	struct dir_context ctx;
@@ -2292,27 +2349,29 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  	struct compat_linux_dirent __user *current_dir;
  	int prev_reclen;
  	int count;
-@@ -518,6 +620,9 @@
+@@ -518,6 +630,10 @@
  		namlen + 2, sizeof(compat_long_t));
  	int prev_reclen;
  
 +#ifdef CONFIG_HYMOFS
 +    if (hymofs_check_filldir(&buf->hymo, name, namlen)) return true;
 +#endif
++
  	buf->error = verify_dirent_name(name, namlen);
  	if (unlikely(buf->error))
  		return false;
-@@ -570,6 +675,9 @@
+@@ -570,6 +686,10 @@
  	if (!f.file)
  		return -EBADF;
  
 +#ifdef CONFIG_HYMOFS
 +	hymofs_prepare_readdir(&buf.hymo, f.file);
 +#endif
++
  	error = iterate_dir(f.file, &buf.ctx);
  	if (error >= 0)
  		error = buf.error;
-@@ -582,6 +690,9 @@
+@@ -582,6 +702,9 @@
  		else
  			error = count - buf.count;
  	}
@@ -2324,7 +2383,7 @@ diff -ruN src_origin/fs/readdir.c src_modified/fs/readdir.c
  }
 diff -ruN src_origin/fs/stat.c src_modified/fs/stat.c
 --- src_origin/fs/stat.c	2025-12-20 03:50:30.030682369 +0800
-+++ src_modified/fs/stat.c	2025-12-18 11:54:21.049400104 +0800
++++ src_modified/fs/stat.c	2025-12-22 14:17:55.187662262 +0800
 @@ -25,6 +25,9 @@
  
  #include "internal.h"
@@ -2364,7 +2423,7 @@ diff -ruN src_origin/fs/stat.c src_modified/fs/stat.c
  EXPORT_SYMBOL(vfs_getattr_nosec);
 diff -ruN src_origin/fs/xattr.c src_modified/fs/xattr.c
 --- src_origin/fs/xattr.c	2025-12-20 03:50:30.053397326 +0800
-+++ src_modified/fs/xattr.c	2025-12-18 11:54:21.049400104 +0800
++++ src_modified/fs/xattr.c	2025-12-22 13:53:25.601442367 +0800
 @@ -25,6 +25,9 @@
  #include <linux/posix_acl_xattr.h>
  

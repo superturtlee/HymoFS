@@ -23,6 +23,8 @@
 #include <linux/uaccess.h>
 
 #include <asm/unaligned.h>
+
+
 #ifdef CONFIG_HYMOFS
 #include "hymofs.h"
 #endif
@@ -287,6 +289,8 @@ static bool filldir(struct dir_context *ctx, const char *name, int namlen,
 #ifdef CONFIG_HYMOFS
     if (hymofs_check_filldir(&buf->hymo, name, strlen(name))) return true;
 #endif
+
+
 	buf->error = verify_dirent_name(name, namlen);
 	if (unlikely(buf->error))
 		return false;
@@ -305,6 +309,7 @@ static bool filldir(struct dir_context *ctx, const char *name, int namlen,
 	prev_reclen = buf->prev_reclen;
 	if (prev_reclen && signal_pending(current))
 		return false;
+
 	dirent = buf->current_dir;
 	prev = (void __user *) dirent - prev_reclen;
 	if (!user_write_access_begin(prev, reclen + prev_reclen))
@@ -413,6 +418,8 @@ static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
 #ifdef CONFIG_HYMOFS
 	if (hymofs_check_filldir(&buf->hymo, name, namlen)) return true;
 #endif
+
+
 	buf->error = verify_dirent_name(name, namlen);
 	if (unlikely(buf->error))
 		return false;
@@ -426,6 +433,7 @@ static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
 	prev_reclen = buf->prev_reclen;
 	if (prev_reclen && signal_pending(current))
 		return false;
+
 	dirent = buf->current_dir;
 	prev = (void __user *)dirent - prev_reclen;
 	if (!user_write_access_begin(prev, reclen + prev_reclen))
@@ -483,6 +491,7 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 		return error;
 	}
 #endif
+
 	error = iterate_dir(f.file, &buf.ctx);
 	if (error >= 0)
 		error = buf.error;
@@ -580,6 +589,7 @@ COMPAT_SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
 #ifdef CONFIG_HYMOFS
 	hymofs_prepare_readdir(&buf.hymo, f.file);
 #endif
+
 	error = iterate_dir(f.file, &buf.ctx);
 	if (buf.result)
 		error = buf.result;
@@ -623,6 +633,7 @@ static bool compat_filldir(struct dir_context *ctx, const char *name, int namlen
 #ifdef CONFIG_HYMOFS
     if (hymofs_check_filldir(&buf->hymo, name, namlen)) return true;
 #endif
+
 	buf->error = verify_dirent_name(name, namlen);
 	if (unlikely(buf->error))
 		return false;
@@ -678,6 +689,7 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
 #ifdef CONFIG_HYMOFS
 	hymofs_prepare_readdir(&buf.hymo, f.file);
 #endif
+
 	error = iterate_dir(f.file, &buf.ctx);
 	if (error >= 0)
 		error = buf.error;

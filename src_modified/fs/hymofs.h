@@ -50,8 +50,8 @@ struct filename;
 struct filename *hymofs_handle_getname(struct filename *result);
 
 char *__hymofs_resolve_target(const char *pathname);
-char *__hymofs_reverse_lookup(const char *pathname);
-bool __hymofs_should_hide(const char *pathname);
+int __hymofs_reverse_lookup(const char *pathname, char *buf, size_t buflen);
+bool __hymofs_should_hide(const char *pathname, size_t len);
 bool __hymofs_should_spoof_mtime(const char *pathname);
 int hymofs_populate_injected_list(const char *dir_path, struct dentry *parent, struct list_head *head);
 
@@ -80,16 +80,18 @@ static inline char *hymofs_resolve_target(const char *pathname)
     return __hymofs_resolve_target(pathname);
 }
 
-static inline char *hymofs_reverse_lookup(const char *pathname)
+static inline int hymofs_reverse_lookup(const char *pathname, char *buf, size_t buflen)
 {
-    if (atomic_read(&hymo_atomiconfig) == 0) return NULL;
-    return __hymofs_reverse_lookup(pathname);
+    if (atomic_read(&hymo_atomiconfig) == 0) return -1;
+    return __hymofs_reverse_lookup(pathname, buf, buflen);
 }
 
 static inline bool hymofs_should_hide(const char *pathname)
 {
     if (atomic_read(&hymo_atomiconfig) == 0) return false;
-    return __hymofs_should_hide(pathname);
+    /* Fast path: check for NULL or empty */
+    if (!pathname || !*pathname) return false;
+    return __hymofs_should_hide(pathname, strlen(pathname));
 }
 
 static inline bool hymofs_should_spoof_mtime(const char *pathname)

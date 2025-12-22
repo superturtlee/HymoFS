@@ -85,6 +85,8 @@ atomic_t hymo_atomiconfig = ATOMIC_INIT(0);
 EXPORT_SYMBOL(hymo_atomiconfig);
 
 static bool hymo_debug_enabled = false;
+module_param(hymo_debug_enabled, bool, 0644);
+MODULE_PARM_DESC(hymo_debug_enabled, "Enable debug logging");
 static bool hymo_stealth_enabled = true; // Default to true for security
 
 #define hymo_log(fmt, ...) do { \
@@ -806,8 +808,7 @@ char *__hymofs_resolve_target(const char *pathname)
     struct hymo_merge_entry *merge_entry;
     u32 hash;
     char *target = NULL;
-    char *path_buf = NULL;
-    char *p;
+    const char *p;
     size_t path_len;
     struct list_head candidates;
     struct hymo_merge_target_node *cand, *tmp;
@@ -829,54 +830,47 @@ char *__hymofs_resolve_target(const char *pathname)
         }
     }
     
-    // Merge Rule Lookup (Walk up)
-    // We need a copy to modify, but we are in spinlock.
-    // Allocate buffer outside? No, we can't sleep.
-    // Use GFP_ATOMIC.
-    path_buf = kstrdup(pathname, GFP_ATOMIC);
-    if (!path_buf) {
-        spin_unlock_irqrestore(&hymo_lock, flags);
-        return NULL;
-    }
-    
-    p = path_buf + path_len;
-    while (p > path_buf) {
+    // Merge Rule Lookup (Walk up without allocation)
+    p = pathname + path_len;
+    while (p > pathname) {
         // Find last slash
-        while (p > path_buf && *p != '/') p--;
-        if (p == path_buf && *p != '/') break; // No more slashes
+        while (p > pathname && *p != '/') p--;
+        if (p == pathname && *p != '/') break; // No more slashes
         
-        // Terminate to get parent
-        if (p == path_buf) { // Root
+        // Terminate to get parent (virtual)
+        size_t current_len = p - pathname;
+        if (current_len == 0) { // Root
              // Handle root if needed, but usually we don't merge root
              break;
         }
-        *p = '\0';
         
-        // Lookup parent in merge_dirs
-        hash = full_name_hash(NULL, path_buf, strlen(path_buf));
+        // Lookup parent in merge_dirs using substring hash
+        hash = full_name_hash(NULL, pathname, current_len);
         hash_for_each_possible(hymo_merge_dirs, merge_entry, node, hash) {
-            if (strcmp(merge_entry->src, path_buf) == 0) {
+            // Compare substring
+            if (strlen(merge_entry->src) == current_len && 
+                strncmp(merge_entry->src, pathname, current_len) == 0) {
+                
                 // Found merge rule!
                 
                 /* If the path is just the merge directory itself (or . / ..), 
                    do NOT redirect. We want to open the original directory 
                    so readdir can merge entries. */
-                char *suffix = (char *)pathname + (p - path_buf);
-                if (strcmp(suffix, "/.") == 0 || strcmp(suffix, "/..") == 0) {
+                const char *suffix = pathname + current_len;
+                if (suffix[0] == '\0' || strcmp(suffix, "/.") == 0 || strcmp(suffix, "/..") == 0) {
                     continue;
                 }
 
                 // Construct candidate: target + (pathname - parent)
-                
                 size_t target_len = strlen(merge_entry->target);
-                size_t suffix_len = path_len - (p - path_buf); // includes leading slash
+                size_t suffix_len = path_len - current_len; // includes leading slash
                 
                 cand = kmalloc(sizeof(*cand), GFP_ATOMIC);
                 if (cand) {
                     cand->target = kmalloc(target_len + suffix_len + 1, GFP_ATOMIC);
                     if (cand->target) {
                         strcpy(cand->target, merge_entry->target);
-                        strcat(cand->target, pathname + (p - path_buf));
+                        strcat(cand->target, suffix);
                         list_add_tail(&cand->list, &candidates);
                     } else {
                         kfree(cand);
@@ -889,9 +883,11 @@ char *__hymofs_resolve_target(const char *pathname)
         if (!list_empty(&candidates)) {
             break;
         }
+        
+        // Move p back to continue loop (skip current slash)
+        if (p > pathname) p--;
     }
     
-    kfree(path_buf);
     spin_unlock_irqrestore(&hymo_lock, flags);
     
     // Check candidates
@@ -914,18 +910,18 @@ char *__hymofs_resolve_target(const char *pathname)
 }
 EXPORT_SYMBOL(__hymofs_resolve_target);
 
-/* Returns kstrdup'd source if target found, NULL otherwise. Caller must kfree. */
-char *__hymofs_reverse_lookup(const char *pathname)
+/* Returns length of written string, or -1 if not found/error. Writes to buf. */
+int __hymofs_reverse_lookup(const char *pathname, char *buf, size_t buflen)
 {
     unsigned long flags;
     struct hymo_entry *entry;
     struct hymo_merge_entry *merge_entry;
     u32 hash;
     int bkt;
-    char *src = NULL;
+    int ret = -1;
 
-    if (atomic_read(&hymo_atomiconfig) == 0) return NULL;
-    if (!pathname) return NULL;
+    if (atomic_read(&hymo_atomiconfig) == 0) return -1;
+    if (!pathname || !buf) return -1;
 
     hash = full_name_hash(NULL, pathname, strlen(pathname));
 
@@ -934,7 +930,8 @@ char *__hymofs_reverse_lookup(const char *pathname)
     /* Check 1-to-1 mappings */
     hash_for_each_possible(hymo_targets, entry, target_node, hash) {
         if (strcmp(entry->target, pathname) == 0) {
-            src = kstrdup(entry->src, GFP_ATOMIC);
+            if (strscpy(buf, entry->src, buflen) < 0) ret = -ENAMETOOLONG;
+            else ret = strlen(buf);
             goto out;
         }
     }
@@ -948,23 +945,26 @@ char *__hymofs_reverse_lookup(const char *pathname)
                 size_t src_len = strlen(merge_entry->src);
                 size_t suffix_len = strlen(pathname) - target_len;
                 
-                src = kmalloc(src_len + suffix_len + 1, GFP_ATOMIC);
-                if (src) {
-                    strcpy(src, merge_entry->src);
-                    strcat(src, pathname + target_len);
-                    goto out;
+                if (src_len + suffix_len + 1 > buflen) {
+                    ret = -ENAMETOOLONG;
+                } else {
+                    memcpy(buf, merge_entry->src, src_len);
+                    memcpy(buf + src_len, pathname + target_len, suffix_len);
+                    buf[src_len + suffix_len] = '\0';
+                    ret = src_len + suffix_len;
                 }
+                goto out;
             }
         }
     }
 
 out:
     spin_unlock_irqrestore(&hymo_lock, flags);
-    return src;
+    return ret;
 }
 EXPORT_SYMBOL(__hymofs_reverse_lookup);
 
-bool __hymofs_should_hide(const char *pathname)
+bool __hymofs_should_hide(const char *pathname, size_t len)
 {
     unsigned long flags;
     struct hymo_hide_entry *entry;
@@ -979,11 +979,14 @@ bool __hymofs_should_hide(const char *pathname)
 
     /* Hide control interface from non-root if stealth is enabled */
     if (hymo_stealth_enabled) {
-        if (strcmp(pathname, HYMO_CTL_NAME) == 0 || strcmp(pathname, HYMO_CTL_PATH) == 0) return true;
-        if (strcmp(pathname, HYMO_MIRROR_NAME) == 0 || strcmp(pathname, HYMO_MIRROR_PATH) == 0) return true;
+        /* Fast check using length first */
+        if (len == sizeof(HYMO_CTL_NAME)-1 && strcmp(pathname, HYMO_CTL_NAME) == 0) return true;
+        if (len == sizeof(HYMO_CTL_PATH)-1 && strcmp(pathname, HYMO_CTL_PATH) == 0) return true;
+        if (len == sizeof(HYMO_MIRROR_NAME)-1 && strcmp(pathname, HYMO_MIRROR_NAME) == 0) return true;
+        if (len == sizeof(HYMO_MIRROR_PATH)-1 && strcmp(pathname, HYMO_MIRROR_PATH) == 0) return true;
     }
 
-    hash = full_name_hash(NULL, pathname, strlen(pathname));
+    hash = full_name_hash(NULL, pathname, len);
     spin_lock_irqsave(&hymo_lock, flags);
     hash_for_each_possible(hymo_hide_paths, entry, node, hash) {
         if (strcmp(entry->path, pathname) == 0) {
@@ -1230,6 +1233,7 @@ struct filename *hymofs_handle_getname(struct filename *result)
     if (IS_ERR(result)) return result;
 
     /* HymoFS Path Hiding Hook */
+    /* Use fast path inline check first */
     if (hymofs_should_hide(result->name)) {
         putname(result);
         /* Return ENOENT directly */
@@ -1237,7 +1241,7 @@ struct filename *hymofs_handle_getname(struct filename *result)
     } else {
         if (result->name[0] != '/') {
             /* Handle relative paths by prepending CWD */
-            char *buf = (char *)__get_free_page(GFP_KERNEL);
+            char *buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
             if (buf) {
                 struct path pwd;
                 /* get_fs_pwd is not exported in newer kernels, use manual locking */
@@ -1275,14 +1279,15 @@ struct filename *hymofs_handle_getname(struct filename *result)
                         /* Try to resolve the constructed absolute path */
                         target = hymofs_resolve_target(cwd);
                         
-                        /* Debug logging */
-                        if (strstr(cwd, "MonetCoolapk.apk")) {
-                            hymo_log("getname relative fix: %s -> %s\n", cwd, target ? target : "NULL");
+                        /* Debug logging for relative path resolution */
+                        if (!target && strstr(name, "MonetCoolapk.apk")) {
+                            hymo_log("getname failed: cwd='%s', name='%s', constructed='%s'\n", 
+                                     cwd, name, cwd);
                         }
                     }
                 }
                 path_put(&pwd);
-                free_page((unsigned long)buf);
+                kfree(buf);
             }
         }
         
@@ -1607,65 +1612,62 @@ extern char *d_absolute_path(const struct path *, char *, int);
 void hymofs_spoof_stat(const struct path *path, struct kstat *stat)
 {
     if (!hymo_stealth_enabled) return;
+    if (atomic_read(&hymo_atomiconfig) == 0) return;
 
-    char *buf = (char *)__get_free_page(GFP_KERNEL);
+    char *buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
     if (buf && path && path->dentry) {
         /* Use d_absolute_path to bypass our own d_path hook and get the real physical path */
         char *p = d_absolute_path(path, buf, PAGE_SIZE);
         if (!IS_ERR(p)) {
             /* HymoFS: Check if this path is a merge target (physical path) and map back to virtual */
-            char *virtual_path = __hymofs_reverse_lookup(p);
+            char *virtual_buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
             bool is_injected = false;
             
-            if (virtual_path) {
-                /* Use virtual path for spoofing checks */
-                hymo_log("spoofing merge target %s -> %s\n", p, virtual_path);
-                /* Copy virtual path to buffer for subsequent checks */
-                strscpy(buf, virtual_path, PAGE_SIZE);
-                p = buf;
-                kfree(virtual_path);
-                is_injected = true;
+            if (virtual_buf) {
+                if (__hymofs_reverse_lookup(p, virtual_buf, PAGE_SIZE) > 0) {
+                    hymo_log("spoofing merge target %s -> %s\n", p, virtual_buf);
+                    p = virtual_buf; /* Switch to virtual path */
+                    is_injected = true;
+                }
             }
 
             /* Only spoof attributes for files we injected */
             if (is_injected) {
-                /* HymoFS: Recursive parent lookup to find real device ID and attributes */
-                /* This is safe here because we only do it for injected files, avoiding bootloops */
-                char *search_path = kstrdup(p, GFP_KERNEL);
-                if (search_path) {
-                    char *curr = search_path;
-                    struct path parent_path;
-                    
-                    while (curr) {
-                        char *last_slash = strrchr(curr, '/');
-                        if (!last_slash) break;
-                        
-                        if (last_slash == curr) {
-                            /* Parent is root */
-                            if (kern_path("/", LOOKUP_FOLLOW, &parent_path) == 0) {
-                                struct inode *inode = d_backing_inode(parent_path.dentry);
-                                stat->uid = inode->i_uid;
-                                stat->gid = inode->i_gid;
-                                stat->dev = inode->i_sb->s_dev;
-                                hymo_log("spoofing attrs for %s from root: dev=%u\n", p, stat->dev);
-                                path_put(&parent_path);
-                            }
-                            break;
-                        }
-                        
-                        *last_slash = '\0';
-                        
-                        if (kern_path(curr, LOOKUP_FOLLOW, &parent_path) == 0) {
+                /* Always look up parent to get correct fs attributes (dev, uid, gid) */
+                char *last_slash = strrchr(p, '/');
+                if (last_slash) {
+                    if (last_slash == p) {
+                        /* Parent is root */
+                        struct path parent_path;
+                        if (kern_path("/", LOOKUP_FOLLOW, &parent_path) == 0) {
                             struct inode *inode = d_backing_inode(parent_path.dentry);
                             stat->uid = inode->i_uid;
                             stat->gid = inode->i_gid;
                             stat->dev = inode->i_sb->s_dev;
-                            hymo_log("spoofing attrs for %s from %s: dev=%u\n", p, curr, stat->dev);
                             path_put(&parent_path);
-                            break;
                         }
+                    } else {
+                        *last_slash = '\0';
+                        struct path parent_path;
+                        if (kern_path(p, LOOKUP_FOLLOW, &parent_path) == 0) {
+                            struct inode *inode = d_backing_inode(parent_path.dentry);
+                            stat->uid = inode->i_uid;
+                            stat->gid = inode->i_gid;
+                            stat->dev = inode->i_sb->s_dev;
+                            path_put(&parent_path);
+                        } else {
+                            /* Fallback if parent lookup fails (rare) */
+                            if (strncmp(p, "/system/", 8) == 0 || 
+                                strncmp(p, "/vendor/", 8) == 0 ||
+                                strncmp(p, "/product/", 9) == 0 ||
+                                strncmp(p, "/odm/", 5) == 0 ||
+                                strncmp(p, "/apex/", 6) == 0) {
+                                stat->uid = KUIDT_INIT(0);
+                                stat->gid = KGIDT_INIT(0);
+                            }
+                        }
+                        *last_slash = '/';
                     }
-                    kfree(search_path);
                 }
                 /* Obfuscate inode for injected files too */
                 stat->ino ^= 0x48594D4F;
@@ -1687,8 +1689,10 @@ void hymofs_spoof_stat(const struct path *path, struct kstat *stat)
                     stat->gid = KGIDT_INIT(0);
                 }
             }
+            
+            if (virtual_buf) kfree(virtual_buf);
         }
-        free_page((unsigned long)buf);
+        kfree(buf);
     }
 }
 EXPORT_SYMBOL(hymofs_spoof_stat);
