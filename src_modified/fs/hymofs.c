@@ -1229,11 +1229,6 @@ struct filename *hymofs_handle_getname(struct filename *result)
                         /* Try to resolve the constructed absolute path */
                         target = hymofs_resolve_target(cwd);
                         
-                        /* Debug logging for relative path resolution */
-                        if (!target && strstr(name, "MonetCoolapk.apk")) {
-                            hymo_log("getname failed: cwd='%s', name='%s', constructed='%s'\n", 
-                                     cwd, name, cwd);
-                        }
                     }
                 }
                 path_put(&pwd);
