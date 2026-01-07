@@ -9,7 +9,7 @@ env:
 on:
   push:
     branches:
-      - android15_6.6
+      - main
       
 jobs:
   build:
@@ -33,8 +33,6 @@ jobs:
           sudo rm -rf /var/lib/man-db/auto-update &&
           sudo apt update &&
           sudo apt-get install -y --no-install-recommends binutils python-is-python3 libssl-dev libelf-dev ccache &
-          #旧版完整指令：（由于经过验证大部分指令已内置于GitHub Action环境中，故进行精简）
-          #sudo apt-get install -y --no-install-recommends curl bison flex make binutils git perl gcc python3 python-is-python3 bc libssl-dev libelf-dev zip unzip ccache
           
           echo "正在克隆源码仓库..."
           aria2c -s16 -x16 -k1M https://github.com/cctv18/android_kernel_common_oneplus_sm8750/archive/refs/heads/oneplus/sm8750_v_16.0.0_oneplus_13_6.6.89.zip -o common.zip && 
@@ -64,137 +62,100 @@ jobs:
 
       - name: 配置ccache目录
         run: |
-          echo "CCACHE_DIR=$HOME/.ccache_6.6.89" >> $GITHUB_ENV
+          echo "CCACHE_DIR=$HOME/.ccache_hymofs_6.6.89" >> $GITHUB_ENV
           echo "CCACHE_MAXSIZE=3G" >> $GITHUB_ENV
           echo "当前磁盘空间："
           df -h
-          echo "当前构建内核版本：6.6.89"
+          echo "当前构建内核版本：6.6.89 (HymoFS)"
 
       - name: 载入当前版本内核的 ccache缓存
         uses: actions/cache@v4
         id: ccache-restore
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-neov4-6.6.89-${{ runner.os }}-main
+          key: ccache-hymofs-6.6.89-${{ runner.os }}-main
           restore-keys: |
-            ccache-neov4-6.6.89-${{ runner.os }}-
-            ccache-neov4-6.6.89-
+            ccache-hymofs-6.6.89-${{ runner.os }}-
+            ccache-hymofs-6.6.89-
       
       - name: 初始化并配置ccache
         run: |
-          # 设置ccache环境变量
           export CCACHE_COMPILERCHECK="none"
           export CCACHE_BASEDIR="${{ github.workspace }}"
           export CCACHE_NOHASHDIR="true"
           export CCACHE_HARDLINK="true"
           export CCACHE_DIR="${{ env.CCACHE_DIR }}"
           export CCACHE_MAXSIZE="${{ env.CCACHE_MAXSIZE }}"
-          
-          # 确保ccache目录存在
           mkdir -p "$CCACHE_DIR"
-          
-          # 每次运行都重新配置缓存大小
           echo "配置ccache缓存大小为: $CCACHE_MAXSIZE"
           ccache -M "$CCACHE_MAXSIZE"
           ccache -o compression=true
-          
-          # 显示初始缓存状态
           echo "ccache初始状态:"
           ccache -s
-          
-          # 如果缓存恢复命中，显示详细信息
           if [ "${{ steps.ccache-restore.outputs.cache-hit }}" == 'true' ]; then
             echo "ccache缓存命中详情:"
             ccache -sv
           fi
 
-      - name: 添加KernelSU
+      - name: 添加 YukiSU (直接复制 kernel 目录)
         id: ksu_version
         run: |
-          # 进入内核工作目录
           cd kernel_workspace
-          echo "正在配置SukiSU Ultra..."
-            curl -LSs "https://raw.githubusercontent.com/Anatdx/YukiSU/refs/heads/main/kernel/setup.sh" | bash -s tmp-builtin
-            cd ./KernelSU
-            # 获取当前 Git 提交的短哈希 (8位)
-            GIT_COMMIT_HASH=$(git rev-parse --short=8 HEAD)
-            echo "当前提交哈希: $GIT_COMMIT_HASH"
-            export KSU_VERSION=$KSU_VERSION
-            # 尝试最多 3 次获取 KernelSU API 版本号
-            for i in {1..3}; do
-              # 从远程 Kbuild 中提取 KSU_API_VERSION
-              KSU_API_VERSION=$(curl -s "https://raw.githubusercontent.com/Anatdx/YukiSU/tmp-builtin/kernel/Kbuild" | 
-                # 查找第一个包含版本定义的行
-                grep -m1 "KSU_VERSION_API :=" | 
-                # 提取等号后的值
-                awk -F'= ' '{print $2}' | 
-                # 删除所有空白字符
-                tr -d '[:space:]')
-              # 如果成功获取到版本号则跳出循环，否则等待 1 秒后重试
-              [ -n "$KSU_API_VERSION" ] && break || sleep 1
-            done
-            # 如果获取失败，使用默认版本号 3.1.7
-            [ -z "$KSU_API_VERSION" ] && KSU_API_VERSION="3.1.7"
-            # 将 API 版本号存储到 GitHub 环境变量
-            echo "KSU_API_VERSION=$KSU_API_VERSION" >> $GITHUB_ENV
-            # 创建版本定义模板&版本格式函数: 使用获取的提交哈希和固定后缀
-            # KSU_VERSION_API: API 版本定义
-            # KSU_VERSION_FULL: 完整版本定义
-            VERSION_DEFINITIONS=$'define get_ksu_version_full\nv\\$1-'"$GIT_COMMIT_HASH"$'@Anatdx\nendef\n\nKSU_VERSION_API := '"$KSU_API_VERSION"$'\nKSU_VERSION_FULL := v'"$KSU_API_VERSION"$'-'"$GIT_COMMIT_HASH"$'@Anatdx'
-            # 清理内核 Kbuild 中的旧版本定义
-            # 删除版本函数
-            sed -i '/define get_ksu_version_full/,/endef/d' kernel/Kbuild
-            # 删除 API 版本定义
-            sed -i '/KSU_VERSION_API :=/d' kernel/Kbuild
-            # 删除完整版本定义
-            sed -i '/KSU_VERSION_FULL :=/d' kernel/Kbuild
-            # 在 REPO_OWNER 行后插入新版本定义
-            awk -v def="$VERSION_DEFINITIONS" '
-              # 当找到 REPO_OWNER 行时，插入版本定义并设置标记
+          echo "正在克隆 YukiSU 仓库..."
+          git clone --depth=1 https://github.com/Anatdx/YukiSU.git
+          
+          echo "  [*] 复制 YukiSU kernel 到 drivers/kernelsu..."
+          mkdir -p ./common/drivers/kernelsu
+          cp -r ./YukiSU/kernel/* ./common/drivers/kernelsu/
+          
+          echo "  [*] 添加 KernelSU 到 drivers Kconfig 和 Makefile..."
+          if ! grep -q "kernelsu/Kconfig" ./common/drivers/Kconfig; then
+              echo 'source "drivers/kernelsu/Kconfig"' >> ./common/drivers/Kconfig
+          fi
+          if ! grep -q "kernelsu" ./common/drivers/Makefile; then
+              echo 'obj-$(CONFIG_KSU) += kernelsu/' >> ./common/drivers/Makefile
+          fi
+          
+          # 获取版本信息
+          cd YukiSU
+          GIT_COMMIT_HASH=$(git rev-parse --short=8 HEAD)
+          echo "当前提交哈希: $GIT_COMMIT_HASH"
+          
+          KSU_API_VERSION=$(grep -m1 "KSU_VERSION_API :=" kernel/Kbuild | awk -F'= ' '{print $2}' | tr -d '[:space:]')
+          [ -z "$KSU_API_VERSION" ] && KSU_API_VERSION="1.2.0"
+          echo "API 版本: $KSU_API_VERSION"
+          echo "KSU_API_VERSION=$KSU_API_VERSION" >> $GITHUB_ENV
+          
+          # 创建版本定义
+          VERSION_DEFINITIONS=$'define get_ksu_version_full\nv\\$1-'"$GIT_COMMIT_HASH"$'@Anatdx\nendef\n\nKSU_VERSION_API := '"$KSU_API_VERSION"$'\nKSU_VERSION_FULL := v'"$KSU_API_VERSION"$'-'"$GIT_COMMIT_HASH"$'@Anatdx'
+          
+          KBUILD_FILE="../common/drivers/kernelsu/Kbuild"
+          sed -i '/define get_ksu_version_full/,/endef/d' "$KBUILD_FILE"
+          sed -i '/KSU_VERSION_API :=/d' "$KBUILD_FILE"
+          sed -i '/KSU_VERSION_FULL :=/d' "$KBUILD_FILE"
+          awk -v def="$VERSION_DEFINITIONS" '
               /REPO_OWNER :=/ {print; print def; inserted=1; next}
-              # 打印所有行
               1
-              # 如果未找到插入点，在文件末尾追加
               END {if (!inserted) print def}
-            ' kernel/Kbuild > kernel/Kbuild.tmp && mv kernel/Kbuild.tmp kernel/Kbuild
+          ' "$KBUILD_FILE" > "${KBUILD_FILE}.tmp" && mv "${KBUILD_FILE}.tmp" "$KBUILD_FILE"
+          
+          # 版本号
+          KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null) + 6865 2>/dev/null || echo 114514)
+          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+          echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
+          
+          echo ">>> 验证结果："
+          grep -A5 "REPO_OWNER" "$KBUILD_FILE" | head -n 8
+          echo "YukiSU版本号: v${KSU_API_VERSION}-${GIT_COMMIT_HASH}@Anatdx"
 
-            # 生成自定义版本号（基于提交计数）, 失败时使用 114514
-            KSU_VERSION=$(expr $(git rev-list --count main 2>/dev/null) + 6865 2>/dev/null || echo 114514)
-            # 存储版本号到 GitHub 环境变量
-            echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
-            echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
-
-            # 验证修改结果
-            grep -A10 "REPO_OWNER" kernel/Kbuild  # 检查插入点后的内容
-            grep "KSU_VERSION_FULL" kernel/Kbuild # 确认版本定义存在
-            echo "SukiSU版本号: v${KSU_API_VERSION}-${GIT_COMMIT_HASH}@Anatdx"
-
-      - name: 应用 KernelSU & SUSFS 补丁
-        run: |
-          cd kernel_workspace
-          echo "正在添加SukiSU Ultra补丁..."
-          git clone https://github.com/ShirkNeko/susfs4ksu.git -b gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}
-          git clone https://github.com/ShirkNeko/SukiSU_patch.git
-          cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch ./common/
-          cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
-          cp ./susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-          cp ./SukiSU_patch/69_hide_stuff.patch ./common/
-          cd ./common
-          # Fix missing struct kstat declaration in susfs.h
-          sed -i '/#include <linux\/susfs_def.h>/a struct kstat;' ./include/linux/susfs.h
-          # Fix missing ksu_seccomp_allow_cache in setuid_hook.c
-          sed -i '/extern void disable_seccomp(void);/a static inline void ksu_seccomp_allow_cache(void *filter, int syscall_nr) { disable_seccomp(); }' ../KernelSU/kernel/setuid_hook.c
-          patch -p1 < 50_add_susfs_in_gki-${{ env.ANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
-          patch -p1 < 69_hide_stuff.patch || true
-
-      - name: 添加 HymoFS
+      - name: 应用 KSU + HymoFS 统一补丁
         run: |
           cd kernel_workspace/common
-          cp ${{ github.workspace }}/patch/hymofs_with_susfs.patch .
-          patch -p1 -F 3 < hymofs_with_susfs.patch
-          echo "CONFIG_HYMOFS=y" >> ./arch/arm64/configs/gki_defconfig
-          echo ">>> 修复编译错误..."
-          
+          echo "正在应用 KSU + HymoFS 统一补丁..."
+          cp ${{ github.workspace }}/patch/hymofs.patch .
+          patch -p1 -F 3 < hymofs.patch || true
+          echo "  [*] 补丁应用完成！"
+
       - name: 应用lz4 1.10.0 & zstd 1.5.7补丁
         run: |
           echo "正在添加lz4 1.10.0 & zstd 1.5.7补丁…"
@@ -207,91 +168,76 @@ jobs:
           git apply -p1 < 001-lz4.patch || true
           patch -p1 < 002-zstd.patch || true
 
-      - name: 添加SUSFS 配置项
+      - name: 添加 defconfig 配置项
         run: |
           cd kernel_workspace
-          echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> ./common/arch/arm64/configs/gki_defconfig
-
-      - name: 添加 KSU & 其他配置项
-        run: |
-          cd kernel_workspace
-          echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
-          #添加对 Mountify (backslashxx/mountify) 模块的支持
-          echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
-          # 开启O2编译优化配置
-          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./common/arch/arm64/configs/gki_defconfig
-          #禁用 defconfig 检查
+          DEFCONFIG=./common/arch/arm64/configs/gki_defconfig
+          
+          # KSU 配置
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+          
+          # HymoFS 配置
+          echo "CONFIG_KSU_HYMOFS_LSMBPS=y" >> "$DEFCONFIG"
+          echo "CONFIG_KSU_HYMOFS=y" >> "$DEFCONFIG"
+          
+          # Mountify 支持
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
+          
+          # 编译优化
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "$DEFCONFIG"
+          echo "CONFIG_HEADERS_INSTALL=n" >> "$DEFCONFIG"
+          
+          # 禁用 defconfig 检查
           sed -i 's/check_defconfig//' ./common/build.config.gki
-          #跳过将uapi标准头安装到 usr/include 目录的不必要操作，节省编译时间
-          echo "CONFIG_HEADERS_INSTALL=n" >> ./common/arch/arm64/configs/gki_defconfig
           
       - name: 启用网络功能增强优化配置
         run: |
           cd kernel_workspace
-          #启用  BPF 流解析器,实现高性能网络流量处理,增强网络监控和分析能力
-          echo "CONFIG_BPF_STREAM_PARSER=y" >> ./common/arch/arm64/configs/gki_defconfig
-          #开启增强 Netfilter 防火墙扩展模块,支持基于地址类型的匹配规则,启用 IP 集合支持,提高防火墙规则灵活性,支持更复杂的流量过滤策略
-          echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_NETFILTER_XT_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
-          #启用 IP 集框架及其多种数据结构实现,提供高效的大规模 IP 地址管理,提高防火墙规则处理效率,减少内存占用
-          echo "CONFIG_IP_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_MAX=65534" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_BITMAP_IP=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_BITMAP_IPMAC=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_BITMAP_PORT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_IP=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_IPMARK=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_IPPORT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_IPPORTIP=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_IPPORTNET=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_IPMAC=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_MAC=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_NET=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_NETNET=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_NETPORT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP_SET_LIST_SET=y" >> ./common/arch/arm64/configs/gki_defconfig
-          #启用 IPv6 网络地址转换
-          echo "CONFIG_IP6_NF_NAT=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> ./common/arch/arm64/configs/gki_defconfig
-          #由于部分机型的vintf兼容性检测规则，在开启CONFIG_IP6_NF_NAT后开机会出现"您的设备内部出现了问题。请联系您的设备制造商了解详情。"的提示，故添加一个配置修复补丁，在编译内核时隐藏CONFIG_IP6_NF_NAT=y但不影响对应功能编译
+          DEFCONFIG=./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_BPF_STREAM_PARSER=y" >> "$DEFCONFIG"
+          echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> "$DEFCONFIG"
+          echo "CONFIG_NETFILTER_XT_SET=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_MAX=65534" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_BITMAP_IP=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_BITMAP_IPMAC=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_BITMAP_PORT=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_HASH_IP=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_HASH_IPMARK=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_HASH_IPPORT=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_HASH_IPPORTIP=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_HASH_IPPORTNET=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_HASH_IPMAC=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_HASH_MAC=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_HASH_NET=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_HASH_NETNET=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_HASH_NETPORT=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP_SET_LIST_SET=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP6_NF_NAT=y" >> "$DEFCONFIG"
+          echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> "$DEFCONFIG"
           cd common
           wget https://github.com/cctv18/oppo_oplus_realme_sm8750/raw/refs/heads/main/other_patch/config.patch
           patch -p1 -F 3 < config.patch || true
 
       - name: 启用ADIOS IO调度器
         run: |
-          echo "正在启用ADIOS IO调度器(将截止时间优先调度算法与基于自主学习的自适应延迟控制算法相结合, 降低I/O延迟)…"
+          echo "正在启用ADIOS IO调度器..."
           cd kernel_workspace
           echo "CONFIG_MQ_IOSCHED_ADIOS=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y" >> ./common/arch/arm64/configs/gki_defconfig
 
       - name: 启用Re-Kernel支持
         run: |
-          echo "正在启用Re-Kernel支持(用于与Freezer,NoActive等软件配合使用,提升冻结后台能力)…"
+          echo "正在启用Re-Kernel支持..."
           cd kernel_workspace
           echo "CONFIG_REKERNEL=y" >> ./common/arch/arm64/configs/gki_defconfig
 
       - name: 启用内核级基带保护
         run: |
-          echo "正在启用启用内核级基带保护支持…"
+          echo "正在启用内核级基带保护支持…"
           cd kernel_workspace
           echo "CONFIG_BBG=y" >> ./common/arch/arm64/configs/gki_defconfig
           cd ./common/security
@@ -365,13 +311,13 @@ jobs:
           echo "FAKETIME=$FAKETIME" >> $GITHUB_ENV
           SO_DIR=$(pwd)
           export PRELOAD_LIBS="$SO_DIR/libfakestat.so $SO_DIR/libfaketimeMT.so"
-          #创建 CC (编译器) 包装器
+          
           echo '#!/bin/bash' > cc-wrapper
           echo 'export LD_PRELOAD="'$PRELOAD_LIBS'"' >> cc-wrapper
           echo 'export FAKESTAT="'$FAKESTAT'"' >> cc-wrapper
           echo 'export FAKETIME="'$FAKETIME'"' >> cc-wrapper
           echo 'ccache clang "$@"' >> cc-wrapper
-          #创建 LD (链接器) 包装器
+          
           echo '#!/bin/bash' > ld-wrapper
           echo 'export LD_PRELOAD="'$PRELOAD_LIBS'"' >> ld-wrapper
           echo 'export FAKESTAT="'$FAKESTAT'"' >> ld-wrapper
@@ -397,29 +343,24 @@ jobs:
           echo "--- 编译前环境文件时间戳: ---"
           LD_PRELOAD=$PRELOAD_LIBS stat ./Makefile
           
-          #在构建内核的同时清除不必要的.NET, Android NDK, Haskell, CodeQL运行库，清理空间且不阻塞后续步骤运行
+          # 清理空间
           sudo rm -rf /usr/share/dotnet &
           sudo rm -rf /usr/local/lib/android &
           sudo rm -rf /opt/ghc &
           sudo rm -rf /opt/hostedtoolcache/CodeQL &
+          
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig &&
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
           
-          # 编译后时间劫持二次校验
-          echo "--- 编译后环境时间: $(LD_PRELOAD=$PRELOAD_LIBS date) ---"
-          echo "--- 编译后环境文件时间戳: ---"
-          LD_PRELOAD=$PRELOAD_LIBS stat ./Makefile
           echo "内核编译完成！"
           echo "ccache状态："
           ccache -s
-          echo "编译后空间:"
           df -h
 
       - name: "🧠 Set Artifact Name | 设置产物名称"
         id: set_name
         run: |
-            echo "ARTIFACT_NAME=Anykernel3_SukiSU_${{ env.KSUVER }}" >> $GITHUB_OUTPUT
-          
+          echo "ARTIFACT_NAME=Anykernel3_YukiSU_HymoFS_${{ env.KSUVER }}_SM8750" >> $GITHUB_OUTPUT
 
       - name: 克隆 AnyKernel3 并打包
         run: |
@@ -447,13 +388,9 @@ jobs:
           cd kernel_workspace
           ZIP_FILE=$(ls *.zip | head -n 1)
           echo "Signing $ZIP_FILE..."
-          
-          # Sign
           gpg --detach-sign --local-user an@anatdx.com --batch --yes --pinentry-mode loopback \
             --passphrase "${{ secrets.GPG_PASSPHRASE }}" \
             --output "$ZIP_FILE.asc" "$ZIP_FILE"
-            
-          # Verify output
           if [ -f "$ZIP_FILE.asc" ]; then
             echo "Signature created successfully:"
             ls -lh "$ZIP_FILE.asc"
@@ -462,13 +399,6 @@ jobs:
             exit 1
           fi
 
-      - name: 上传 Ccache 调试日志
-        if: always() && inputs.ccache_debug
-        uses: actions/upload-artifact@v4
-        with:
-          name: ccache-debug-log
-          path: ${{ github.workspace }}/kernel_workspace/ccache.log
-      
       - name: "📤 Upload AnyKernel3 | 上传 AnyKernel3"
         uses: actions/upload-artifact@v4
         with:
@@ -499,5 +429,5 @@ jobs:
           KPM: Off
           LZ4KD: Off
           BBR: Off
-          KSU_VAR: "SukiSU"
+          KSU_VAR: "YukiSU+HymoFS"
 

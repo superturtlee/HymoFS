@@ -54,6 +54,5 @@ dkms.conf
 # debug information files
 *.dwo
 
-local.properties
-.idea/
-manager_app/
+# Kernel source repository (development workspace, patches are in patch/)
+patch_workspace/
