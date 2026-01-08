@@ -246,10 +246,10 @@ index cf487b0e49dd..69bb08bc80b9 100644
  
 diff --git a/fs/hymofs.c b/fs/hymofs.c
 new file mode 100644
-index 000000000000..fd5340b853be
+index 000000000000..6be028197676
 --- /dev/null
 +++ b/fs/hymofs.c
-@@ -0,0 +1,2407 @@
+@@ -0,0 +1,2352 @@
 +#include <linux/string.h>
 +#include <linux/mm.h>
 +#include <linux/file.h>
@@ -274,7 +274,6 @@ index 000000000000..fd5340b853be
 +#include <linux/init.h>
 +#include <linux/time.h>
 +#include <linux/dirent.h>
-+#include <linux/miscdevice.h>
 +#include <linux/cred.h>
 +#include <linux/uidgid.h>
 +#include <linux/vmalloc.h>
@@ -288,8 +287,8 @@ index 000000000000..fd5340b853be
 +#include <linux/sched/task.h>
 +#include <linux/xattr.h>
 +#include <linux/rcupdate.h>
-+#include <linux/ioctl.h>
 +#include <linux/utsname.h>
++#include <linux/export.h>
 +#include "mount.h"
 +
 +#include <linux/hymofs.h>
@@ -314,10 +313,10 @@ index 000000000000..fd5340b853be
 +#ifdef CONFIG_KSU_HYMOFS
 +
 +/*
-+ * DEBUG MODE - Remove before release!
-+ * Uncomment to enable debug privileges
++ * DEBUG MODE - Disabled for production!
++ * Uncomment to enable debug privileges for shell
 + */
-+#define HYMOFS_DEBUG_MODE 1
++// #define HYMOFS_DEBUG_MODE 1
 +
 +/*
 + * Check if current process is KSU privileged (manager, allowlist, or su domain)
@@ -705,7 +704,7 @@ index 000000000000..fd5340b853be
 +        }
 +
 +        buf_size = list_arg.size;
-+        if (buf_size > 128 * 1024) buf_size = 128 * 1024; // Limit max buffer
++        if (buf_size > 16 * 1024) buf_size = 16 * 1024; // Limit max buffer to 16KB
 +        
 +        kbuf = kzalloc(buf_size, GFP_KERNEL);
 +        if (!kbuf) {
@@ -1197,90 +1196,13 @@ index 000000000000..fd5340b853be
 +    return ret;
 +}
 +
-+/* ================= fd-based communication (miscdevice) ================= */
++/* Export dispatch function for KSU supercalls integration */
++EXPORT_SYMBOL(hymo_dispatch_cmd);
 +
-+static int hymo_ioctl_cmd_to_syscall_cmd(unsigned int ioctl_cmd)
-+{
-+    switch (ioctl_cmd) {
-+    case HYMO_IOC_ADD_RULE:           return HYMO_CMD_ADD_RULE;
-+    case HYMO_IOC_DEL_RULE:           return HYMO_CMD_DEL_RULE;
-+    case HYMO_IOC_HIDE_RULE:          return HYMO_CMD_HIDE_RULE;
-+    case HYMO_IOC_CLEAR_ALL:          return HYMO_CMD_CLEAR_ALL;
-+    case HYMO_IOC_GET_VERSION:        return HYMO_CMD_GET_VERSION;
-+    case HYMO_IOC_LIST_RULES:         return HYMO_CMD_LIST_RULES;
-+    case HYMO_IOC_SET_DEBUG:          return HYMO_CMD_SET_DEBUG;
-+    case HYMO_IOC_REORDER_MNT_ID:     return HYMO_CMD_REORDER_MNT_ID;
-+    case HYMO_IOC_SET_STEALTH:        return HYMO_CMD_SET_STEALTH;
-+    case HYMO_IOC_HIDE_OVERLAY_XATTRS: return HYMO_CMD_HIDE_OVERLAY_XATTRS;
-+    case HYMO_IOC_ADD_MERGE_RULE:     return HYMO_CMD_ADD_MERGE_RULE;
-+    case HYMO_IOC_SET_AVC_LOG_SPOOFING: return HYMO_CMD_SET_AVC_LOG_SPOOFING;
-+    case HYMO_IOC_SET_MIRROR_PATH:    return HYMO_CMD_SET_MIRROR_PATH;
-+    default:                          return -1;
-+    }
-+}
-+
-+static int hymo_dev_open(struct inode *inode, struct file *file)
-+{
-+    /* Only allow root to open */
-+    if (!uid_eq(current_uid(), GLOBAL_ROOT_UID)) {
-+        return -EPERM;
-+    }
-+    return 0;
-+}
-+
-+static int hymo_dev_release(struct inode *inode, struct file *file)
-+{
-+    return 0;
-+}
-+
-+static long hymo_dev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
-+{
-+    int syscall_cmd;
-+    int ret;
-+
-+    /* Handle GET_VERSION specially - return version directly */
-+    if (cmd == HYMO_IOC_GET_VERSION) {
-+        int version = HYMO_PROTOCOL_VERSION;
-+        if (copy_to_user((void __user *)arg, &version, sizeof(version)))
-+            return -EFAULT;
-+        return 0;
-+    }
-+
-+    /* Convert ioctl cmd to syscall cmd */
-+    syscall_cmd = hymo_ioctl_cmd_to_syscall_cmd(cmd);
-+    if (syscall_cmd < 0) {
-+        return -EINVAL;
-+    }
-+
-+    /* Reuse existing dispatch logic */
-+    ret = hymo_dispatch_cmd(syscall_cmd, (void __user *)arg);
-+    return ret;
-+}
-+
-+static const struct file_operations hymo_dev_fops = {
-+    .owner          = THIS_MODULE,
-+    .open           = hymo_dev_open,
-+    .release        = hymo_dev_release,
-+    .unlocked_ioctl = hymo_dev_ioctl,
-+    .compat_ioctl   = hymo_dev_ioctl,
-+};
-+
-+static struct miscdevice hymo_misc_dev = {
-+    .minor = MISC_DYNAMIC_MINOR,
-+    .name  = HYMO_DEVICE_NAME,
-+    .fops  = &hymo_dev_fops,
-+    .mode  = 0600, /* Only root can access */
-+};
-+
-+static bool hymo_dev_registered = false;
 +static bool hymofs_initialized = false;
-+
-+/* ================= End of fd-based communication ================= */
 +
 +int hymofs_init(void)
 +{
-+    int ret;
-+
 +    if (hymofs_initialized) {
 +        pr_info("HymoFS: already initialized\n");
 +        return 0;
@@ -1293,17 +1215,8 @@ index 000000000000..fd5340b853be
 +    hash_init(hymo_inject_dirs);
 +    hash_init(hymo_xattr_sbs);
 +
-+    /* Register miscdevice (fd-based mode) */
-+    ret = misc_register(&hymo_misc_dev);
-+    if (ret) {
-+        pr_warn("HymoFS: Failed to register misc device (ret=%d), fd-based mode unavailable\n", ret);
-+    } else {
-+        hymo_dev_registered = true;
-+        pr_info("HymoFS: Registered /dev/%s for fd-based communication\n", HYMO_DEVICE_NAME);
-+    }
-+
 +    hymofs_initialized = true;
-+    pr_info("HymoFS: initialized (inline mode)\n");
++    pr_info("HymoFS: initialized (uses KSU fd for communication)\n");
 +    return 0;
 +}
 +
@@ -1314,13 +1227,8 @@ index 000000000000..fd5340b853be
 +        return;
 +    }
 +
-+    if (hymo_dev_registered) {
-+        misc_deregister(&hymo_misc_dev);
-+        hymo_dev_registered = false;
-+    }
-+
 +    hymofs_initialized = false;
-+    pr_info("HymoFS: exited, LKM can take over now\n");
++    pr_info("HymoFS: exited\n");
 +}
 +
 +/* Returns kstrdup'd target if found, NULL otherwise. Caller must kfree. */
@@ -1485,6 +1393,9 @@ index 000000000000..fd5340b853be
 +
 +bool __hymofs_should_hide(const char *pathname, size_t len)
 +{
++    struct hymo_hide_entry *hide_entry;
++    u32 hash;
++
 +    if (atomic_read(&hymo_atomiconfig) == 0) return false;
 +    if (!pathname) return false;
 +
@@ -1495,19 +1406,35 @@ index 000000000000..fd5340b853be
 +    if (hymofs_is_ksu_privileged()) return false;
 +
 +    /*
-+     * Fast path: Only check stealth mode here (O(1))
-+     * The actual hide rules are now checked via inode marking in walk_component()
-+     * This avoids expensive hash table traversal on every path lookup
++     * Stealth mode: Hide mirror path and device
 +     */
 +    if (hymo_stealth_enabled) {
 +        size_t name_len = strlen(hymo_current_mirror_name);
 +        size_t path_len = strlen(hymo_current_mirror_path);
 +
++        /* Hide mirror directory */
 +        if ((len == name_len && strcmp(pathname, hymo_current_mirror_name) == 0) ||
 +            (len == path_len && strcmp(pathname, hymo_current_mirror_path) == 0)) {
 +            return true;
 +        }
++        
++        /* Hide /dev/hymo device */
++        if ((len == 9 && strcmp(pathname, "/dev/hymo") == 0) ||
++            (len == 4 && strcmp(pathname, "hymo") == 0)) {
++            return true;
++        }
 +    }
++
++    /* Check hash table for explicit hide rules (fallback for non-inode paths) */
++    hash = full_name_hash(NULL, pathname, len);
++    rcu_read_lock();
++    hlist_for_each_entry_rcu(hide_entry, &hymo_hide_paths[hash_min(hash, HYMO_HASH_BITS)], node) {
++        if (strcmp(hide_entry->path, pathname) == 0) {
++            rcu_read_unlock();
++            return true;
++        }
++    }
++    rcu_read_unlock();
 +
 +    return false;
 +}
@@ -2034,6 +1961,24 @@ index 000000000000..fd5340b853be
 +    if (unlikely(namlen <= 2 && name[0] == '.')) {
 +        if (namlen == 1 || (namlen == 2 && name[1] == '.'))
 +            return false;
++    }
++
++    /* Stealth mode: Hide hymo devices in /dev directory */
++    if (hymo_stealth_enabled && ctx->dir_path) {
++        /* Check if we're listing /dev directory */
++        if (ctx->dir_path_len == 4 && strcmp(ctx->dir_path, "/dev") == 0) {
++            /* Hide hymo and hymo_mirror */
++            if ((namlen == 4 && memcmp(name, "hymo", 4) == 0) ||
++                (namlen == 11 && memcmp(name, "hymo_mirror", 11) == 0)) {
++                return true;  /* Hide it! */
++            }
++            /* Also check against current mirror name */
++            size_t mirror_name_len = strlen(hymo_current_mirror_name);
++            if (namlen == mirror_name_len && 
++                memcmp(name, hymo_current_mirror_name, namlen) == 0) {
++                return true;
++            }
++        }
 +    }
 +
 +    /* If we are in replace mode, hide all original entries */
@@ -3236,10 +3181,10 @@ index a6eb8cbc7b4c..743f9f969170 100644
  
 diff --git a/include/linux/hymo_magic.h b/include/linux/hymo_magic.h
 new file mode 100644
-index 000000000000..f7ece124eaae
+index 000000000000..a7c3cbdd3bed
 --- /dev/null
 +++ b/include/linux/hymo_magic.h
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,144 @@
 +#ifndef _LINUX_HYMO_MAGIC_H
 +#define _LINUX_HYMO_MAGIC_H
 +
@@ -3255,7 +3200,7 @@ index 000000000000..f7ece124eaae
 +
 +#define HYMO_MAGIC1 0x48594D4F // "HYMO"
 +#define HYMO_MAGIC2 0x524F4F54 // "ROOT"
-+#define HYMO_PROTOCOL_VERSION 9
++#define HYMO_PROTOCOL_VERSION 10
 +
 +#define HYMO_MAX_LEN_PATHNAME 256
 +#define HYMO_FAKE_CMDLINE_SIZE 4096
@@ -3297,10 +3242,6 @@ index 000000000000..f7ece124eaae
 +#define HYMO_CMD_SET_UNAME 0x48017
 +#define HYMO_CMD_SET_CMDLINE 0x48018
 +#define HYMO_CMD_GET_FEATURES 0x48019
-+
-+// Device path
-+#define HYMO_DEVICE_NAME "hymo"
-+#define HYMO_DEVICE_PATH "/dev/hymo"
 +
 +struct hymo_syscall_arg {
 +    char *src;
@@ -3391,10 +3332,10 @@ index 000000000000..f7ece124eaae
 \ No newline at end of file
 diff --git a/include/linux/hymofs.h b/include/linux/hymofs.h
 new file mode 100644
-index 000000000000..66a797d66d9e
+index 000000000000..4861a8739e6a
 --- /dev/null
 +++ b/include/linux/hymofs.h
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,292 @@
 +#ifndef _LINUX_HYMOFS_H
 +#define _LINUX_HYMOFS_H
 +
@@ -3494,6 +3435,9 @@ index 000000000000..66a797d66d9e
 +int hymofs_init(void);
 +void hymofs_exit(void);
 +
++/* HymoFS command dispatch - called via KSU supercalls */
++int hymo_dispatch_cmd(unsigned int cmd, void __user *arg);
++
 +/* kstat spoofing - full stat() result manipulation */
 +void hymofs_spoof_kstat_by_ino(unsigned long ino, struct kstat *stat);
 +bool hymofs_is_kstat_spoofed(struct inode *inode);
@@ -3541,7 +3485,7 @@ index 000000000000..66a797d66d9e
 + * DEBUG MODE - Completely disable hiding for debugging
 + * Remove this before release!
 + */
-+#define HYMOFS_DEBUG_DISABLE_HIDING 1
++// #define HYMOFS_DEBUG_DISABLE_HIDING 1
 +
 +/* 
 + * Inline wrapper with fast-path checks
