@@ -1,189 +1,102 @@
+diff --git a/drivers/input/input.c b/drivers/input/input.c
+index 9bb1d3de723e..6f664a5cbf1a 100644
+--- a/drivers/input/input.c
++++ b/drivers/input/input.c
+@@ -424,11 +424,21 @@ void input_handle_event(struct input_dev *dev,
+  * to 'seed' initial state of a switch or initial position of absolute
+  * axis, etc.
+  */
++#if defined(CONFIG_KSU) && (defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_HYMOFS))
++extern bool ksu_input_hook __read_mostly;
++extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
++#endif
++
+ void input_event(struct input_dev *dev,
+ 		 unsigned int type, unsigned int code, int value)
+ {
+ 	unsigned long flags;
+ 
++#if defined(CONFIG_KSU) && (defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_HYMOFS))
++if (unlikely(ksu_input_hook))
++ksu_handle_input_handle_event(&type, &code, &value);
++#endif
++
+ 	if (is_event_supported(type, dev->evbit, EV_MAX)) {
+ 
+ 		spin_lock_irqsave(&dev->event_lock, flags);
 diff --git a/fs/Kconfig b/fs/Kconfig
-index 2fb08d05d158..b5282e150441 100644
+index 2fb08d05d158..5860033d6b4f 100644
 --- a/fs/Kconfig
 +++ b/fs/Kconfig
-@@ -406,3 +406,137 @@ config IO_WQ
+@@ -406,3 +406,30 @@ config IO_WQ
  	bool
  
  endmenu
 +
-+menu "HymoFS"
++menu "KernelSU - HymoFS"
 +
-+config HYMOFS
-+	bool "HymoFS Support"
++config KSU_HYMOFS
++	bool "KernelSU addon - HymoFS"
++	depends on KSU
 +	default n
 +	help
-+	  HymoFS is a kernel-level path manipulation and hiding framework.
-+	  It provides various file system virtualization capabilities for
-+	  advanced users and security researchers.
-+	  
-+	  If unsure, say N.
++	  Enable HymoFS (Hymo Filesystem) for KernelSU.
++	  HymoFS provides advanced filesystem manipulation features including:
++	  - Path redirection (open redirect)
++	  - Directory entry hiding
++	  - Directory entry injection
++	  - Stat/kstat spoofing
++	  - Extended attributes filtering
++	  - Uname spoofing
++	  - Cmdline/bootconfig spoofing
 +
-+config HYMOFS_REVERSE_LOOKUP
-+	bool "Enable reverse path lookup (d_path hooks)"
-+	depends on HYMOFS
-+	default y
-+	help
-+	  Allow converting real paths back to virtual paths when userspace
-+	  queries file paths. This is the reverse operation of forward redirect.
-+	  
-+	  - Low performance overhead (~5% on path resolution)
-+	  - Effective on all processes
-+	  - Required for complete path hiding
-+	  
-+	  If unsure, say Y.
-+
-+config HYMOFS_FORWARD_REDIRECT
-+	bool "Enable forward path redirection (namei hooks)"
-+	depends on HYMOFS
-+	default y
-+	help
-+	  Allow redirecting virtual paths to real paths during file opening.
-+	  This is the forward operation complementary to reverse lookup.
-+	  
-+	  - Low performance overhead (~3% on file open)
-+	  - Effective on all processes
-+	  - Required for path redirection
-+	  
-+	  If unsure, say Y.
-+
-+config HYMOFS_HIDE_ENTRIES
-+	bool "Enable directory entry hiding"
-+	depends on HYMOFS
-+	default y
-+	help
-+	  Allow hiding user-defined files and directories from directory listing.
-+	  
-+	  - Medium performance overhead (~10% on directory traversal)
-+	  - Effective on all processes
-+	  - Uses in-kernel filtering during readdir()
-+	  
-+	  If unsure, say Y.
-+
-+config HYMOFS_INJECT_ENTRIES
-+	bool "Enable directory entry injection (experimental)"
-+	depends on HYMOFS
-+	default n
-+	help
-+	  Allow injecting virtual files/directories into directory listings.
-+	  
-+	  - Medium-high performance overhead (~15% on directory traversal)
-+	  - Effective on all processes
-+	  - Experimental feature, may cause stability issues
-+	  
-+	  Disable if you don't need virtual files or care about performance.
-+	  If unsure, say N.
-+
-+config HYMOFS_STAT_SPOOF
-+	bool "Enable stat/kstat spoofing"
-+	depends on HYMOFS
-+	default n
-+	help
-+	  Allow spoofing file metadata (size, timestamps, mode, etc.).
-+	  
-+	  - Low performance overhead (~2% on stat calls)
-+	  - Effective only on zygote spawned user app processes
-+	  
-+	  Disable if you don't need metadata manipulation.
-+	  If unsure, say N.
-+
-+config HYMOFS_XATTR_FILTER
-+	bool "Enable extended attributes filtering"
-+	depends on HYMOFS
-+	default y
-+	help
-+	  Allow filtering/spoofing extended attributes (xattr).
-+	  
-+	  - Very low performance overhead (~1% on xattr operations)
-+	  - Effective on all processes
-+	  - Commonly used to hide SELinux contexts
-+	  
-+	  If unsure, say Y.
-+
-+config HYMOFS_UNAME_SPOOF
-+	bool "Enable uname spoofing"
-+	depends on HYMOFS
-+	default n
-+	help
-+	  Allow spoofing the output of uname syscall.
-+	  
-+	  - Negligible performance overhead
-+	  - Effective on all processes
-+	  
-+	  Disable if you don't need to hide kernel version.
-+	  If unsure, say N.
-+
-+config HYMOFS_CMDLINE_SPOOF
-+	bool "Enable cmdline/bootconfig spoofing"
-+	depends on HYMOFS
-+	default n
-+	help
-+	  Allow spoofing /proc/cmdline and /proc/bootconfig.
-+	  
-+	  - Negligible performance overhead
-+	  - Effective on all processes
-+	  
-+	  Disable if you don't need to hide boot parameters.
-+	  If unsure, say N.
-+
-+config HYMOFS_DEBUG
++config KSU_HYMOFS_DEBUG
 +	bool "Enable HymoFS debug logging"
-+	depends on HYMOFS
++	depends on KSU_HYMOFS
 +	default n
 +	help
-+	  Enable verbose debug logging for HymoFS operations.
-+	  
-+	  - High performance overhead (for debugging only)
-+	  - Logs all hook invocations to kernel log
-+	  
-+	  MUST be disabled in production builds.
-+	  If unsure, say N.
++	  Enable debug logging for HymoFS operations.
++	  This will print verbose debug information to kernel log.
 +
 +endmenu
 diff --git a/fs/Makefile b/fs/Makefile
-index c6963a9a4d0a..078dce1ef551 100644
+index c6963a9a4d0a..35a4779c99e3 100644
 --- a/fs/Makefile
 +++ b/fs/Makefile
 @@ -22,6 +22,8 @@ obj-y :=	open.o read_write.o file_table.o super.o \
  		fs_types.o fs_context.o fs_parser.o fsopen.o init.o \
  		kernel_read_file.o mnt_idmapping.o remap_range.o
  
-+obj-$(CONFIG_HYMOFS) += hymofs.o
++obj-$(CONFIG_KSU_HYMOFS) += hymofs.o
 +
  obj-$(CONFIG_BUFFER_HEAD)	+= buffer.o mpage.o
  obj-$(CONFIG_PROC_FS)		+= proc_namespace.o
  obj-$(CONFIG_LEGACY_DIRECT_IO)	+= direct-io.o
 diff --git a/fs/d_path.c b/fs/d_path.c
-index 5f4da5c8d5db..2c27ce85e515 100644
+index 5f4da5c8d5db..c5410a023347 100644
 --- a/fs/d_path.c
 +++ b/fs/d_path.c
 @@ -8,6 +8,9 @@
  #include <linux/prefetch.h>
  #include "mount.h"
  #include "internal.h"
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +#include <linux/hymofs.h>
 +#endif
  
  struct prepend_buffer {
  	char *buf;
-@@ -235,6 +238,9 @@ char *d_absolute_path(const struct path *path,
- 		return ERR_PTR(-EINVAL);
- 	return extract_string(&b);
- }
-+#ifdef CONFIG_HYMOFS
-+EXPORT_SYMBOL(d_absolute_path);
-+#endif
- 
- static void get_fs_root_rcu(struct fs_struct *fs, struct path *root)
- {
-@@ -291,7 +297,58 @@ char *d_path(const struct path *path, char *buf, int buflen)
+@@ -291,7 +294,60 @@ char *d_path(const struct path *path, char *buf, int buflen)
  	prepend_path(path, &root, &b);
  	rcu_read_unlock();
  
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +    {
 +        char *res = extract_string(&b);
++
++        /* CRITICAL: Early boot protection - kernel subsystems not ready */
++        if (system_state < SYSTEM_RUNNING)
++            return res;
 +
 +        /* Fast exit if no rules - this also guards early boot */
 +        if (atomic_read(&hymo_atomiconfig) == 0)
@@ -218,13 +131,11 @@ index 5f4da5c8d5db..2c27ce85e515 100644
 +                }
 +            }
 +            
-+#ifdef CONFIG_HYMOFS_REVERSE_LOOKUP
 +            /* Write directly to buf */
 +            if (hymofs_reverse_lookup(lookup_path, buf, buflen) > 0) {
 +                if (allocated) kfree(lookup_path);
 +                return buf;
 +            }
-+#endif
 +            
 +            if (allocated) kfree(lookup_path);
 +        }
@@ -236,12 +147,102 @@ index 5f4da5c8d5db..2c27ce85e515 100644
  }
  EXPORT_SYMBOL(d_path);
  
+diff --git a/fs/exec.c b/fs/exec.c
+index cf487b0e49dd..69bb08bc80b9 100644
+--- a/fs/exec.c
++++ b/fs/exec.c
+@@ -78,6 +78,10 @@
+ #include <trace/events/sched.h>
+ #include <trace/hooks/sched.h>
+ 
++#if defined(CONFIG_KSU) && defined(CONFIG_KSU_HYMOFS)
++#include <linux/hymofs.h>
++#endif
++
+ static int bprm_creds_from_file(struct linux_binprm *bprm);
+ 
+ int suid_dumpable = 0;
+@@ -1901,6 +1905,15 @@ static int bprm_execve(struct linux_binprm *bprm,
+ 	return retval;
+ }
+ 
++#if defined(CONFIG_KSU) && defined(CONFIG_KSU_HYMOFS)
++__attribute__((hot))
++extern bool ksu_execveat_hook __read_mostly;
++extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
++void *argv, void *envp, int *flags);
++extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
++void *__never_use_argv, void *__never_use_envp, int *__never_use_flags);
++#endif
++
+ static int do_execveat_common(int fd, struct filename *filename,
+ 			      struct user_arg_ptr argv,
+ 			      struct user_arg_ptr envp,
+@@ -1912,6 +1925,20 @@ static int do_execveat_common(int fd, struct filename *filename,
+ 	if (IS_ERR(filename))
+ 		return PTR_ERR(filename);
+ 
++#if defined(CONFIG_KSU) && defined(CONFIG_KSU_HYMOFS)
++	/* 
++	 * KSU exec hooks must run for all processes:
++	 * - su compat: allowlist apps can execute su
++	 * - ksud exec: init children may execute ksud
++	 * Process marking is only for FILE HIDING, not exec handling
++	 */
++	if (unlikely(ksu_execveat_hook)) {
++		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
++	} else {
++		ksu_handle_execveat_sucompat(&fd, &filename, NULL, NULL, NULL);
++	}
++#endif
++
+ 	/*
+ 	 * We move the actual failure in case of RLIMIT_NPROC excess from
+ 	 * set*uid() to execve() because too many poorly written programs
+@@ -2122,11 +2149,24 @@ void set_dumpable(struct mm_struct *mm, int value)
+ 	set_mask_bits(&mm->flags, MMF_DUMPABLE_MASK, value);
+ }
+ 
++#if defined(CONFIG_KSU) && (defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_HYMOFS))
++__attribute__((hot))
++extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
++void *__never_use_argv,void *__never_use_envp,
++int *__never_use_flags);
++#endif
++
+ SYSCALL_DEFINE3(execve,
+ 		const char __user *, filename,
+ 		const char __user *const __user *, argv,
+ 		const char __user *const __user *, envp)
+ {
++#if defined(CONFIG_KSU) && (defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_HYMOFS))
++	struct filename *fname = getname(filename);
++	int fd = AT_FDCWD;
++	ksu_handle_execveat_sucompat(&fd, &fname, NULL, NULL, NULL);
++	return do_execveat(fd, fname, argv, envp, 0);
++#endif
+ 	return do_execve(getname(filename), argv, envp);
+ }
+ 
+@@ -2146,6 +2186,12 @@ COMPAT_SYSCALL_DEFINE3(execve, const char __user *, filename,
+ 	const compat_uptr_t __user *, argv,
+ 	const compat_uptr_t __user *, envp)
+ {
++#if defined(CONFIG_KSU) && (defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_HYMOFS)) // 32-bit ksud and 32-on-64 support
++	struct filename *fname = getname(filename);
++	int fd = AT_FDCWD;
++	ksu_handle_execveat_sucompat(&fd, &fname, NULL, NULL, NULL);
++	return compat_do_execveat(fd, fname, argv, envp, 0);
++#endif
+ 	return compat_do_execve(getname(filename), argv, envp);
+ }
+ 
 diff --git a/fs/hymofs.c b/fs/hymofs.c
 new file mode 100644
-index 000000000000..d3948716013f
+index 000000000000..e6f2cbafe9d5
 --- /dev/null
 +++ b/fs/hymofs.c
-@@ -0,0 +1,2292 @@
+@@ -0,0 +1,2259 @@
 +#include <linux/string.h>
 +#include <linux/mm.h>
 +#include <linux/file.h>
@@ -269,6 +270,7 @@ index 000000000000..d3948716013f
 +#include <linux/cred.h>
 +#include <linux/uidgid.h>
 +#include <linux/vmalloc.h>
++#include <linux/atomic.h>
 +#include <linux/spinlock.h>
 +#include <linux/kernel.h>
 +#include <linux/mnt_namespace.h>
@@ -280,13 +282,66 @@ index 000000000000..d3948716013f
 +#include <linux/rcupdate.h>
 +#include <linux/utsname.h>
 +#include <linux/export.h>
-+#include <linux/miscdevice.h>
 +#include "mount.h"
 +
 +#include <linux/hymofs.h>
 +#include <linux/hymo_magic.h>
 +
-+#ifdef CONFIG_HYMOFS
++/* KSU domain check - from KernelSU */
++extern bool is_ksu_domain(void);
++
++/* KSU allowlist check - from KernelSU */
++extern bool __ksu_is_allow_uid_for_current(uid_t uid);
++#define ksu_is_allow_uid_for_current(uid) unlikely(__ksu_is_allow_uid_for_current(uid))
++
++/* KSU manager uid - from KernelSU (defined in throne_tracker.c) */
++extern uid_t ksu_manager_uid;
++
++/* PER_USER_RANGE for multi-user support */
++#define PER_USER_RANGE 100000
++
++#ifdef CONFIG_KSU_HYMOFS
++
++/*
++ * DEBUG MODE - Disabled for production!
++ * Uncomment to enable debug privileges for shell
++ */
++// #define HYMOFS_DEBUG_MODE 1
++
++/*
++ * Check if current process is KSU privileged (manager, allowlist, or su domain)
++ * This function needs to be in hymofs.c to properly link with KernelSU symbols
++ */
++bool __hymofs_is_ksu_privileged(void)
++{
++    uid_t uid = current_uid().val;
++    uid_t appid = uid % PER_USER_RANGE;
++    
++#ifdef HYMOFS_DEBUG_MODE
++    /* DEBUG: Shell always privileged (adb shell) */
++    if (uid == 2000) {
++        pr_info("hymofs: DEBUG: shell uid 2000 privileged\n");
++        return true;
++    }
++    
++#endif /* HYMOFS_DEBUG_MODE */
++    
++    /* KSU domain (su process) */
++    if (is_ksu_domain())
++        return true;
++    
++    /* Manager app - check appid (uid % PER_USER_RANGE) for multi-user support */
++    if (ksu_manager_uid != (uid_t)-1) {
++        if (appid == ksu_manager_uid % PER_USER_RANGE)
++            return true;
++    }
++    
++    /* Allowlist apps */
++    if (ksu_is_allow_uid_for_current(uid))
++        return true;
++    
++    return false;
++}
 +
 +/* HymoFS - Advanced Path Manipulation and Hiding */
 +/* Increased hash bits to reduce collisions with large number of rules */
@@ -339,12 +394,9 @@ index 000000000000..d3948716013f
 +static DEFINE_HASHTABLE(hymo_xattr_sbs, HYMO_HASH_BITS);
 +static DEFINE_HASHTABLE(hymo_merge_dirs, HYMO_HASH_BITS);
 +static DEFINE_SPINLOCK(hymo_lock);
-+bool hymofs_enabled = false;
-+EXPORT_SYMBOL(hymofs_enabled);
++atomic_t hymo_atomiconfig = ATOMIC_INIT(0);
 +
 +static bool hymo_debug_enabled = false;
-+module_param(hymo_debug_enabled, bool, 0644);
-+MODULE_PARM_DESC(hymo_debug_enabled, "Enable debug logging");
 +static bool hymo_stealth_enabled = true;
 +
 +static char hymo_mirror_path_buf[PATH_MAX] = HYMO_DEFAULT_MIRROR_PATH;
@@ -412,15 +464,12 @@ index 000000000000..d3948716013f
 +    }
 +}
 +
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
 +/* Fast O(1) check if inode is marked hidden */
 +bool __hymofs_is_inode_hidden(struct inode *inode)
 +{
 +    /* Fast path checks are in the inline wrapper */
 +    return test_bit(AS_FLAGS_HYMO_HIDE, &inode->i_mapping->flags);
 +}
-+EXPORT_SYMBOL(__hymofs_is_inode_hidden);
-+#endif
 +
 +static void hymo_cleanup_locked(void) {
 +    struct hymo_entry *entry;
@@ -593,7 +642,7 @@ index 000000000000..d3948716013f
 +        strscpy(hymo_mirror_name_buf, HYMO_DEFAULT_MIRROR_NAME, NAME_MAX);
 +        hymo_current_mirror_path = hymo_mirror_path_buf;
 +        hymo_current_mirror_name = hymo_mirror_name_buf;
-+        hymofs_enabled = false;
++        atomic_inc(&hymo_atomiconfig);
 +        spin_unlock(&hymo_lock);
 +        /* Wait for RCU grace period after releasing lock */
 +        rcu_barrier();
@@ -606,9 +655,15 @@ index 000000000000..d3948716013f
 +
 +    if (cmd == HYMO_CMD_SET_DEBUG) {
 +        int val;
-+        if (copy_from_user(&val, arg, sizeof(val))) return -EFAULT;
++        printk(KERN_INFO "hymofs: SET_DEBUG entry, arg=%px\n", arg);
++        if (copy_from_user(&val, arg, sizeof(val))) {
++            printk(KERN_ERR "hymofs: SET_DEBUG copy_from_user failed\n");
++            return -EFAULT;
++        }
++        printk(KERN_INFO "hymofs: SET_DEBUG val=%d (raw)\n", val);
 +        hymo_debug_enabled = !!val;
-+        hymo_log("debug mode %s\n", hymo_debug_enabled ? "enabled" : "disabled");
++        // Always print this message so user can confirm debug state changed
++        printk(KERN_INFO "hymofs: debug mode %s\n", hymo_debug_enabled ? "enabled" : "disabled");
 +        return 0;
 +    }
 +
@@ -622,7 +677,7 @@ index 000000000000..d3948716013f
 +        int val;
 +        if (copy_from_user(&val, arg, sizeof(val))) return -EFAULT;
 +        hymo_stealth_enabled = !!val;
-+        hymo_log("stealth mode %s\n", hymo_stealth_enabled ? "enabled" : "disabled");
++        printk(KERN_INFO "hymofs: stealth mode %s\n", hymo_stealth_enabled ? "enabled" : "disabled");
 +        if (hymo_stealth_enabled) {
 +            hymofs_spoof_mounts();
 +            hymofs_reorder_mnt_id();
@@ -656,7 +711,7 @@ index 000000000000..d3948716013f
 +        
 +        // Header
 +        written += scnprintf(kbuf + written, buf_size - written, "HymoFS Protocol: %d\n", HYMO_PROTOCOL_VERSION);
-+        written += scnprintf(kbuf + written, buf_size - written, "HymoFS Enabled: %d\n", hymofs_enabled ? 1 : 0);
++        written += scnprintf(kbuf + written, buf_size - written, "HymoFS Atomiconfig Version: %d\n", atomic_read(&hymo_atomiconfig));
 +
 +        hash_for_each_rcu(hymo_paths, bkt, entry, node) {
 +            if (written >= buf_size) break;
@@ -806,7 +861,7 @@ index 000000000000..d3948716013f
 +            } else {
 +                ret = -EEXIST;
 +            }
-+            hymofs_enabled = true;
++            atomic_inc(&hymo_atomiconfig);
 +            spin_unlock(&hymo_lock);
 +            break;
 +        }
@@ -958,7 +1013,7 @@ index 000000000000..d3948716013f
 +                iput(parent_inode);
 +            }
 +
-+            hymofs_enabled = true;
++            atomic_inc(&hymo_atomiconfig);
 +            spin_unlock(&hymo_lock);
 +            break;
 +        }
@@ -1036,7 +1091,7 @@ index 000000000000..d3948716013f
 +                        kfree(hide_entry);
 +                }
 +            }
-+            hymofs_enabled = true;
++            atomic_inc(&hymo_atomiconfig);
 +            spin_unlock(&hymo_lock);
 +            break;
 +        }
@@ -1066,7 +1121,7 @@ index 000000000000..d3948716013f
 +                        hymo_log("hide xattrs for sb %p (path: %s)\n", sb, src);
 +                    }
 +                }
-+                hymofs_enabled = true;
++                atomic_inc(&hymo_atomiconfig);
 +                spin_unlock(&hymo_lock);
 +                path_put(&path);
 +            } else {
@@ -1106,7 +1161,7 @@ index 000000000000..d3948716013f
 +            // Note: We don't support deleting xattr SB rules by path easily here
 +            // because we store SBs, not paths. Use CLEAR_ALL to reset.
 +    out_delete:
-+            hymofs_enabled = true;
++            atomic_inc(&hymo_atomiconfig);
 +            spin_unlock(&hymo_lock);
 +            break;
 +
@@ -1127,92 +1182,17 @@ index 000000000000..d3948716013f
 +    return ret;
 +}
 +
-+static int hymo_ioctl_cmd_to_syscall_cmd(unsigned int ioctl_cmd)
-+{
-+    switch (ioctl_cmd) {
-+    case HYMO_IOC_ADD_RULE:           return HYMO_CMD_ADD_RULE;
-+    case HYMO_IOC_DEL_RULE:           return HYMO_CMD_DEL_RULE;
-+    case HYMO_IOC_HIDE_RULE:          return HYMO_CMD_HIDE_RULE;
-+    case HYMO_IOC_CLEAR_ALL:          return HYMO_CMD_CLEAR_ALL;
-+    case HYMO_IOC_GET_VERSION:        return HYMO_CMD_GET_VERSION;
-+    case HYMO_IOC_LIST_RULES:         return HYMO_CMD_LIST_RULES;
-+    case HYMO_IOC_SET_DEBUG:          return HYMO_CMD_SET_DEBUG;
-+    case HYMO_IOC_REORDER_MNT_ID:     return HYMO_CMD_REORDER_MNT_ID;
-+    case HYMO_IOC_SET_STEALTH:        return HYMO_CMD_SET_STEALTH;
-+    case HYMO_IOC_HIDE_OVERLAY_XATTRS: return HYMO_CMD_HIDE_OVERLAY_XATTRS;
-+    case HYMO_IOC_ADD_MERGE_RULE:     return HYMO_CMD_ADD_MERGE_RULE;
-+    case HYMO_IOC_SET_MIRROR_PATH:    return HYMO_CMD_SET_MIRROR_PATH;
-+    default:                          return -1;
-+    }
-+}
++/* Export dispatch function for KSU supercalls integration */
++EXPORT_SYMBOL(hymo_dispatch_cmd);
 +
-+static int hymo_dev_open(struct inode *inode, struct file *file)
-+{
-+    /* Only allow root to open */
-+    if (!uid_eq(current_uid(), GLOBAL_ROOT_UID)) {
-+        return -EPERM;
-+    }
-+    return 0;
-+}
++static bool hymofs_initialized = false;
 +
-+static int hymo_dev_release(struct inode *inode, struct file *file)
++int hymofs_init(void)
 +{
-+    return 0;
-+}
-+
-+static long hymo_dev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
-+{
-+    int syscall_cmd;
-+    int ret;
-+
-+    /* Handle GET_VERSION specially - return version directly */
-+    if (cmd == HYMO_IOC_GET_VERSION) {
-+        int version = HYMO_PROTOCOL_VERSION;
-+        if (copy_to_user((void __user *)arg, &version, sizeof(version)))
-+            return -EFAULT;
++    if (hymofs_initialized) {
++        pr_info("HymoFS: already initialized\n");
 +        return 0;
 +    }
-+
-+    /* Handle SET_ENABLED specially - toggle hymofs_enabled */
-+    if (cmd == HYMO_IOC_SET_ENABLED) {
-+        int enabled;
-+        if (copy_from_user(&enabled, (void __user *)arg, sizeof(enabled)))
-+            return -EFAULT;
-+        spin_lock(&hymo_lock);
-+        hymofs_enabled = enabled ? true : false;
-+        spin_unlock(&hymo_lock);
-+        return 0;
-+    }
-+
-+    /* Convert ioctl cmd to syscall cmd */
-+    syscall_cmd = hymo_ioctl_cmd_to_syscall_cmd(cmd);
-+    if (syscall_cmd < 0) {
-+        return -EINVAL;
-+    }
-+    /* Reuse existing dispatch logic */
-+    ret = hymo_dispatch_cmd(syscall_cmd, (void __user *)arg);
-+    return ret;
-+}
-+
-+static const struct file_operations hymo_dev_fops = {
-+    .owner          = THIS_MODULE,
-+    .open           = hymo_dev_open,
-+    .release        = hymo_dev_release,
-+    .unlocked_ioctl = hymo_dev_ioctl,
-+    .compat_ioctl   = hymo_dev_ioctl,
-+};
-+
-+static struct miscdevice hymo_misc_dev = {
-+    .minor = MISC_DYNAMIC_MINOR,
-+    .name  = HYMO_DEVICE_NAME,
-+    .fops  = &hymo_dev_fops,
-+    .mode  = 0600, /* Only root can access */
-+};
-+static bool hymo_dev_registered = false;
-+
-+static int __init hymofs_init(void)
-+{
-+    int ret;
 +
 +    spin_lock_init(&hymo_lock);
 +    hash_init(hymo_paths);
@@ -1220,29 +1200,23 @@ index 000000000000..d3948716013f
 +    hash_init(hymo_hide_paths);
 +    hash_init(hymo_inject_dirs);
 +    hash_init(hymo_xattr_sbs);
-+    
-+    /* Register syscall hook (legacy mode) */
-+    if (hymo_dispatch_cmd_hook) {
-+        pr_err("HymoFS: hook already set?\n");
-+    } else {
-+        hymo_dispatch_cmd_hook = hymo_dispatch_cmd;
-+    }
 +
-+    /* Register miscdevice (fd-based mode) */
-+    ret = misc_register(&hymo_misc_dev);
-+    if (ret) {
-+        pr_warn("HymoFS: Failed to register misc device (ret=%d), fd-based mode unavailable\n", ret);
-+    } else {
-+        hymo_dev_registered = true;
-+        pr_info("HymoFS: Registered /dev/%s for fd-based communication\n", HYMO_DEVICE_NAME);
-+    }
-+    
-+    pr_info("HymoFS: initialized (Syscall + FD Mode)\n");
++    hymofs_initialized = true;
++    pr_info("HymoFS: initialized (uses KSU fd for communication)\n");
 +    return 0;
 +}
-+fs_initcall(hymofs_init);
 +
-+#ifdef CONFIG_HYMOFS_FORWARD_REDIRECT
++void hymofs_exit(void)
++{
++    if (!hymofs_initialized) {
++        pr_info("HymoFS: not initialized, skip exit\n");
++        return;
++    }
++
++    hymofs_initialized = false;
++    pr_info("HymoFS: exited\n");
++}
++
 +/* Returns kstrdup'd target if found, NULL otherwise. Caller must kfree. */
 +char *__hymofs_resolve_target(const char *pathname)
 +{
@@ -1255,7 +1229,7 @@ index 000000000000..d3948716013f
 +    struct list_head candidates;
 +    struct hymo_merge_target_node *cand, *tmp;
 +
-+    if (!hymofs_enabled) return NULL;
++    if (atomic_read(&hymo_atomiconfig) == 0) return NULL;
 +    if (!pathname) return NULL;
 +    
 +    INIT_LIST_HEAD(&candidates);
@@ -1348,11 +1322,7 @@ index 000000000000..d3948716013f
 +
 +    return target;
 +}
-+EXPORT_SYMBOL(__hymofs_resolve_target);
 +
-+#endif /* CONFIG_HYMOFS_FORWARD_REDIRECT */
-+
-+#ifdef CONFIG_HYMOFS_REVERSE_LOOKUP
 +/* Returns length of written string, or -1 if not found/error. Writes to buf. */
 +int __hymofs_reverse_lookup(const char *pathname, char *buf, size_t buflen)
 +{
@@ -1362,7 +1332,9 @@ index 000000000000..d3948716013f
 +    int bkt;
 +    int ret = -1;
 +
-+    if (!hymofs_enabled) return -1;
++    /* Early boot protection - critical for d_path which is called very early */
++    if (system_state < SYSTEM_RUNNING) return -1;
++    if (atomic_read(&hymo_atomiconfig) == 0) return -1;
 +    if (!pathname || !buf) return -1;
 +
 +    hash = full_name_hash(NULL, pathname, strlen(pathname));
@@ -1404,20 +1376,20 @@ index 000000000000..d3948716013f
 +    rcu_read_unlock();
 +    return ret;
 +}
-+EXPORT_SYMBOL(__hymofs_reverse_lookup);
-+#endif /* CONFIG_HYMOFS_REVERSE_LOOKUP */
 +
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
 +bool __hymofs_should_hide(const char *pathname, size_t len)
 +{
 +    struct hymo_hide_entry *hide_entry;
 +    u32 hash;
 +
-+    if (!hymofs_enabled) return false;
++    if (atomic_read(&hymo_atomiconfig) == 0) return false;
 +    if (!pathname) return false;
 +
 +    /* Root sees everything */
 +    if (uid_eq(current_uid(), GLOBAL_ROOT_UID)) return false;
++
++    /* KSU privileged processes see everything */
++    if (hymofs_is_ksu_privileged()) return false;
 +
 +    /*
 +     * Stealth mode: Hide mirror path and device
@@ -1429,6 +1401,12 @@ index 000000000000..d3948716013f
 +        /* Hide mirror directory */
 +        if ((len == name_len && strcmp(pathname, hymo_current_mirror_name) == 0) ||
 +            (len == path_len && strcmp(pathname, hymo_current_mirror_path) == 0)) {
++            return true;
++        }
++        
++        /* Hide /dev/hymo device */
++        if ((len == 9 && strcmp(pathname, "/dev/hymo") == 0) ||
++            (len == 4 && strcmp(pathname, "hymo") == 0)) {
 +            return true;
 +        }
 +    }
@@ -1446,17 +1424,16 @@ index 000000000000..d3948716013f
 +
 +    return false;
 +}
-+EXPORT_SYMBOL(__hymofs_should_hide);
-+#endif /* CONFIG_HYMOFS_HIDE_ENTRIES */
-+
 +bool __hymofs_should_spoof_mtime(const char *pathname)
 +{
 +    struct hymo_inject_entry *entry;
 +    u32 hash;
 +    bool found = false;
 +
-+    if (!hymofs_enabled) return false;
++    if (atomic_read(&hymo_atomiconfig) == 0) return false;
 +    if (!pathname) return false;
++
++    if (is_ksu_domain()) return false;
 +
 +    hash = full_name_hash(NULL, pathname, strlen(pathname));
 +
@@ -1470,8 +1447,6 @@ index 000000000000..d3948716013f
 +    rcu_read_unlock();
 +    return found;
 +}
-+EXPORT_SYMBOL(__hymofs_should_spoof_mtime);
-+#endif /* CONFIG_HYMOFS_HIDE_ENTRIES */
 +
 +static bool __hymofs_should_replace(const char *pathname)
 +{
@@ -1479,8 +1454,10 @@ index 000000000000..d3948716013f
 +    u32 hash;
 +    bool found = false;
 +
-+    if (!hymofs_enabled) return false;
++    if (atomic_read(&hymo_atomiconfig) == 0) return false;
 +    if (!pathname) return false;
++
++    if (is_ksu_domain()) return false;
 +
 +    hash = full_name_hash(NULL, pathname, strlen(pathname));
 +
@@ -1570,7 +1547,7 @@ index 000000000000..d3948716013f
 +    struct hymo_merge_target_node *target_node, *tmp_node;
 +    size_t dir_len;
 +    
-+    if (!hymofs_enabled) return 0;
++    if (atomic_read(&hymo_atomiconfig) == 0) return 0;
 +    if (!dir_path) return 0;
 +
 +    INIT_LIST_HEAD(&merge_targets);
@@ -1666,12 +1643,13 @@ index 000000000000..d3948716013f
 +
 +    return 0;
 +}
-+EXPORT_SYMBOL(hymofs_populate_injected_list);
 +
 +struct filename *hymofs_handle_getname(struct filename *result)
 +{
 +    char *target = NULL;
 +
++    /* Early boot protection */
++    if (system_state < SYSTEM_RUNNING) return result;
 +    if (IS_ERR(result)) return result;
 +
 +    /* HymoFS Path Hiding Hook */
@@ -1740,7 +1718,6 @@ index 000000000000..d3948716013f
 +    }
 +    return result;
 +}
-+EXPORT_SYMBOL(hymofs_handle_getname);
 +
 +/* Resolve relative path with dirfd for fstatat() merge support */
 +struct filename *hymofs_resolve_relative(int dfd, const char *name)
@@ -1788,7 +1765,6 @@ index 000000000000..d3948716013f
 +    fdput(f);
 +    return result;
 +}
-+EXPORT_SYMBOL(hymofs_resolve_relative);
 +
 +/* Bloom filter helper - add a filename */
 +static __always_inline void bloom_add(unsigned long *filter, const char *name, int namlen)
@@ -1940,7 +1916,6 @@ index 000000000000..d3948716013f
 +        }
 +    }
 +}
-+EXPORT_SYMBOL(__hymofs_prepare_readdir);
 +
 +void __hymofs_cleanup_readdir(struct hymo_readdir_context *ctx)
 +{
@@ -1954,19 +1929,18 @@ index 000000000000..d3948716013f
 +        kfree(node);
 +    }
 +}
-+EXPORT_SYMBOL(__hymofs_cleanup_readdir);
 +
 +bool __hymofs_check_filldir(struct hymo_readdir_context *ctx, const char *name, int namlen)
 +{
 +    struct dentry *child;
 +    struct inode *inode;
 +
-+    /* Fast path: If directory has no hidden entries and no merge files, skip all checks */
-+    if (likely(!ctx->dir_has_hidden && !ctx->has_merge_files))
-+        return false;  /* O(1) skip! */
-+
 +    /* Root sees everything */
 +    if (uid_eq(current_uid(), GLOBAL_ROOT_UID))
++        return false;
++
++    /* KSU privileged processes see everything */
++    if (hymofs_is_ksu_privileged())
 +        return false;
 +
 +    /* Skip . and .. - use single comparison where possible */
@@ -1996,6 +1970,10 @@ index 000000000000..d3948716013f
 +    /* If we are in replace mode, hide all original entries */
 +    if (unlikely(ctx->is_replace_mode))
 +        return true;
++
++    /* Fast path: If directory has no hidden entries and no merge files, skip all checks */
++    if (likely(!ctx->dir_has_hidden && !ctx->has_merge_files))
++        return false;  /* O(1) skip! */
 +
 +    /* Fast path: Use inode marking (O(1) bit test) */
 +    if (ctx->dir_has_hidden && ctx->file && ctx->file->f_path.dentry) {
@@ -2036,7 +2014,6 @@ index 000000000000..d3948716013f
 +
 +    return false;
 +}
-+EXPORT_SYMBOL(__hymofs_check_filldir);
 +
 +struct linux_dirent {
 +	unsigned long	d_ino;
@@ -2045,7 +2022,6 @@ index 000000000000..d3948716013f
 +	char		d_name[];
 +};
 +
-+#ifdef CONFIG_HYMOFS_INJECT_ENTRIES
 +/* Inject virtual entries into getdents system call */
 +int hymofs_inject_entries(struct hymo_readdir_context *ctx, void __user **dir_ptr, int *count, loff_t *pos)
 +{
@@ -2121,7 +2097,6 @@ index 000000000000..d3948716013f
 +    *dir_ptr = current_dir;
 +    return error;
 +}
-+EXPORT_SYMBOL(hymofs_inject_entries);
 +
 +/* Inject virtual entries into getdents64 system call */
 +int hymofs_inject_entries64(struct hymo_readdir_context *ctx, void __user **dir_ptr, int *count, loff_t *pos)
@@ -2198,10 +2173,7 @@ index 000000000000..d3948716013f
 +    *dir_ptr = current_dir;
 +    return error;
 +}
-+EXPORT_SYMBOL(hymofs_inject_entries64);
-+#endif /* CONFIG_HYMOFS_INJECT_ENTRIES */
 +
-+#ifdef CONFIG_HYMOFS_STAT_SPOOF
 +static dev_t __attribute__((unused)) get_dev_for_path(const char *path_str) {
 +    struct path path;
 +    dev_t dev = 0;
@@ -2223,8 +2195,12 @@ index 000000000000..d3948716013f
 +    bool is_injected = false;
 +    gfp_t gfp = in_atomic() ? GFP_ATOMIC : GFP_KERNEL;
 +
++    /* Early boot protection */
++    if (system_state < SYSTEM_RUNNING) return;
 +    if (!hymo_stealth_enabled) return;
-+    if (!hymofs_enabled) return;
++    if (atomic_read(&hymo_atomiconfig) == 0) return;
++    /* Safety check for early boot */
++    if (!current->mm && !is_ksu_domain()) return;
 +
 +    buf = kmalloc(PAGE_SIZE, gfp);
 +    if (!buf || !path || !path->dentry) {
@@ -2306,7 +2282,6 @@ index 000000000000..d3948716013f
 +    }
 +    kfree(buf);
 +}
-+EXPORT_SYMBOL(hymofs_spoof_stat);
 +
 +/*
 + * ==================== kstat Spoofing Implementation ====================
@@ -2334,6 +2309,7 @@ index 000000000000..d3948716013f
 +};
 +
 +static DEFINE_HASHTABLE(hymo_kstat_entries, 8);
++static DEFINE_SPINLOCK(hymo_kstat_lock);
 +
 +bool hymofs_is_kstat_spoofed(struct inode *inode)
 +{
@@ -2343,7 +2319,7 @@ index 000000000000..d3948716013f
 +    /* Early boot protection */
 +    if (system_state < SYSTEM_RUNNING) return false;
 +    if (!inode) return false;
-+    if (!hymofs_enabled) return false;
++    if (atomic_read(&hymo_atomiconfig) == 0) return false;
 +
 +    rcu_read_lock();
 +    hash_for_each_possible_rcu(hymo_kstat_entries, entry, node, inode->i_ino) {
@@ -2355,7 +2331,6 @@ index 000000000000..d3948716013f
 +    rcu_read_unlock();
 +    return found;
 +}
-+EXPORT_SYMBOL(hymofs_is_kstat_spoofed);
 +
 +void hymofs_spoof_kstat_by_ino(unsigned long ino, struct kstat *stat)
 +{
@@ -2364,7 +2339,7 @@ index 000000000000..d3948716013f
 +    /* Early boot protection */
 +    if (system_state < SYSTEM_RUNNING) return;
 +    if (!stat) return;
-+    if (!hymofs_enabled) return;
++    if (atomic_read(&hymo_atomiconfig) == 0) return;
 +
 +    /* Root sees real values */
 +    if (uid_eq(current_uid(), GLOBAL_ROOT_UID))
@@ -2391,10 +2366,6 @@ index 000000000000..d3948716013f
 +    }
 +    rcu_read_unlock();
 +}
-+EXPORT_SYMBOL(hymofs_spoof_kstat_by_ino);
-+#endif /* CONFIG_HYMOFS_STAT_SPOOF */
-+
-+#ifdef CONFIG_HYMOFS_UNAME_SPOOF
 +
 +/*
 + * ==================== uname Spoofing Implementation ====================
@@ -2402,6 +2373,7 @@ index 000000000000..d3948716013f
 + */
 +
 +static bool hymo_uname_spoofed = false;
++static DEFINE_SPINLOCK(hymo_uname_lock);
 +
 +static struct {
 +    char release[__NEW_UTS_LEN + 1];
@@ -2411,6 +2383,9 @@ index 000000000000..d3948716013f
 +
 +void hymofs_spoof_uname(struct new_utsname *name)
 +{
++    /* Early boot protection */
++    if (system_state < SYSTEM_RUNNING)
++        return;
 +        
 +    if (!hymo_uname_spoofed)
 +        return;
@@ -2435,10 +2410,6 @@ index 000000000000..d3948716013f
 +        name->machine[__NEW_UTS_LEN] = '\0';
 +    }
 +}
-+EXPORT_SYMBOL(hymofs_spoof_uname);
-+#endif /* CONFIG_HYMOFS_UNAME_SPOOF */
-+
-+#ifdef CONFIG_HYMOFS_CMDLINE_SPOOF
 +
 +/*
 + * ==================== cmdline Spoofing Implementation ====================
@@ -2447,6 +2418,7 @@ index 000000000000..d3948716013f
 +
 +static bool hymo_cmdline_spoofed = false;
 +static char *hymo_fake_cmdline = NULL;
++static DEFINE_SPINLOCK(hymo_cmdline_lock);
 +
 +bool hymofs_is_cmdline_spoofed(void)
 +{
@@ -2467,17 +2439,14 @@ index 000000000000..d3948716013f
 +    hymo_log("cmdline: spoofed\n");
 +    return 0;  /* Return 0 to indicate "spoofed successfully" */
 +}
-+EXPORT_SYMBOL(hymofs_spoof_cmdline);
-+#endif /* CONFIG_HYMOFS_CMDLINE_SPOOF */
-+
-+#ifdef CONFIG_HYMOFS_XATTR_FILTER
-+
 +
 +bool hymofs_is_overlay_xattr(struct dentry *dentry, const char *name)
 +{
 +    struct hymo_xattr_sb_entry *sb_entry;
 +    bool found = false;
 +
++    /* Early boot protection */
++    if (system_state < SYSTEM_RUNNING) return false;
 +    if (!name) return false;
 +    if (strncmp(name, "trusted.overlay.", 16) != 0) return false;
 +    
@@ -2494,7 +2463,6 @@ index 000000000000..d3948716013f
 +    
 +    return found;
 +}
-+EXPORT_SYMBOL(hymofs_is_overlay_xattr);
 +
 +ssize_t hymofs_filter_xattrs(struct dentry *dentry, char *klist, ssize_t len)
 +{
@@ -2505,6 +2473,8 @@ index 000000000000..d3948716013f
 +    char *out = klist;
 +    ssize_t new_len = 0;
 +    
++    /* Early boot protection */
++    if (system_state < SYSTEM_RUNNING) return len;
 +    if (!dentry) return len;
 +
 +    rcu_read_lock();
@@ -2528,47 +2498,41 @@ index 000000000000..d3948716013f
 +        }
 +        p += slen + 1;
 +    }
-+#endif /* CONFIG_HYMOFS_XATTR_FILTER */
 +    return new_len;
 +}
-+EXPORT_SYMBOL(hymofs_filter_xattrs);
 +
-+#endif /* CONFIG_HYMOFS */
++#endif /* CONFIG_KSU_HYMOFS */
 diff --git a/fs/namei.c b/fs/namei.c
-index 5f45d9b2f84d..c669ca206689 100644
+index 5f45d9b2f84d..c9eaded78a3b 100644
 --- a/fs/namei.c
 +++ b/fs/namei.c
 @@ -45,6 +45,10 @@
  #include "internal.h"
  #include "mount.h"
  
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +#include <linux/hymofs.h>
 +#endif
 +
  /* [Feb-1997 T. Schoebel-Theuer]
   * Fundamental changes in the pathname lookup mechanisms (namei)
   * were necessary because of omirr.  The reason is that omirr needs
-@@ -126,8 +130,26 @@
+@@ -126,8 +130,22 @@
  
  #define EMBEDDED_NAME_MAX	(PATH_MAX - offsetof(struct filename, iname))
  
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +struct filename *__original_getname_flags(const char __user *filename, int flags, int *empty);
 +
 +/* Hook getname_flags to intercept path lookups */
 +struct filename *getname_flags(const char __user *filename, int flags, int *empty)
 +{
 +	struct filename *result = __original_getname_flags(filename, flags, empty);
-+#ifdef CONFIG_HYMOFS_FORWARD_REDIRECT
 +	return hymofs_handle_getname(result);
-+#else
-+	return result;
-+#endif
 +}
 +#endif
  struct filename *
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +__original_getname_flags(const char __user *filename, int flags, int *empty)
 +#else
  getname_flags(const char __user *filename, int flags, int *empty)
@@ -2576,7 +2540,7 @@ index 5f45d9b2f84d..c669ca206689 100644
  {
  	struct filename *result;
  	char *kname;
-@@ -3805,6 +3827,7 @@ static struct file *path_openat(struct nameidata *nd,
+@@ -3805,6 +3823,7 @@ static struct file *path_openat(struct nameidata *nd,
  	return ERR_PTR(error);
  }
  
@@ -2584,21 +2548,57 @@ index 5f45d9b2f84d..c669ca206689 100644
  struct file *do_filp_open(int dfd, struct filename *pathname,
  		const struct open_flags *op)
  {
+diff --git a/fs/open.c b/fs/open.c
+index f69210a888fd..b07d5e9d7ff5 100644
+--- a/fs/open.c
++++ b/fs/open.c
+@@ -527,8 +527,17 @@ static long do_faccessat(int dfd, const char __user *filename, int mode, int fla
+ 	return res;
+ }
+ 
++#if defined(CONFIG_KSU) && (defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_HYMOFS))
++__attribute__((hot))
++extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
++		               int *mode, int *flags);
++#endif
++
+ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+ {
++#if defined(CONFIG_KSU) && (defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_HYMOFS))
++	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
++#endif
+ 	return do_faccessat(dfd, filename, mode, 0);
+ }
+ 
+diff --git a/fs/proc/bootconfig.c b/fs/proc/bootconfig.c
+index 2e244ada1f97..9dcd78a2811f 100644
+--- a/fs/proc/bootconfig.c
++++ b/fs/proc/bootconfig.c
+@@ -9,6 +9,9 @@
+ #include <linux/seq_file.h>
+ #include <linux/bootconfig.h>
+ #include <linux/slab.h>
++#ifdef CONFIG_KSU_HYMOFS
++#include <linux/hymofs.h>
++#endif
+ 
+ static char *saved_boot_config;
+ 
 diff --git a/fs/proc/cmdline.c b/fs/proc/cmdline.c
-index a6f76121955f..96acd598c9b5 100644
+index a6f76121955f..ef391a5dbd77 100644
 --- a/fs/proc/cmdline.c
 +++ b/fs/proc/cmdline.c
 @@ -4,9 +4,19 @@
  #include <linux/proc_fs.h>
  #include <linux/seq_file.h>
  #include "internal.h"
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +#include <linux/hymofs.h>
 +#endif
  
  static int cmdline_proc_show(struct seq_file *m, void *v)
  {
-+#ifdef CONFIG_HYMOFS_CMDLINE_SPOOF
++#ifdef CONFIG_KSU_HYMOFS
 +	/* HymoFS: try to spoof cmdline, returns 0 if spoofed */
 +	if (hymofs_spoof_cmdline(m) == 0) {
 +		seq_putc(m, '\n');
@@ -2608,15 +2608,38 @@ index a6f76121955f..96acd598c9b5 100644
  	seq_puts(m, saved_command_line);
  	seq_putc(m, '\n');
  	return 0;
+diff --git a/fs/read_write.c b/fs/read_write.c
+index 06649023585c..ce42b8a8ca55 100644
+--- a/fs/read_write.c
++++ b/fs/read_write.c
+@@ -619,8 +619,18 @@ ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)
+ 	return ret;
+ }
+ 
++#if defined(CONFIG_KSU) && (defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_HYMOFS))
++extern bool ksu_vfs_read_hook __read_mostly;
++extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
++			size_t *count_ptr);
++#endif
++
+ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+ {
++#if defined(CONFIG_KSU) && (defined(CONFIG_KSU_MANUAL_HOOK) || defined(CONFIG_KSU_HYMOFS))
++	if (unlikely(ksu_vfs_read_hook))
++		ksu_handle_sys_read(fd, &buf, &count);
++#endif
+ 	return ksys_read(fd, buf, count);
+ }
+ 
 diff --git a/fs/readdir.c b/fs/readdir.c
-index c8c46e294431..d42d72ac2249 100644
+index c8c46e294431..03db0c25693e 100644
 --- a/fs/readdir.c
 +++ b/fs/readdir.c
 @@ -24,6 +24,10 @@
  
  #include <asm/unaligned.h>
  
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +#include <linux/hymofs.h>
 +#endif
 +
@@ -2627,7 +2650,7 @@ index c8c46e294431..d42d72ac2249 100644
  
  struct readdir_callback {
  	struct dir_context ctx;
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +	struct hymo_readdir_context hymo;
 +#endif
  	struct old_linux_dirent __user * dirent;
@@ -2637,7 +2660,7 @@ index c8c46e294431..d42d72ac2249 100644
  
  	if (!f.file)
  		return -EBADF;
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
++#ifdef CONFIG_KSU_HYMOFS
 +	hymofs_prepare_readdir(&buf.hymo, f.file);
 +#endif
  
@@ -2645,7 +2668,7 @@ index c8c46e294431..d42d72ac2249 100644
  	if (buf.result)
  		error = buf.result;
  
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
++#ifdef CONFIG_KSU_HYMOFS
 +	hymofs_cleanup_readdir(&buf.hymo);
 +#endif
  	fdput_pos(f);
@@ -2655,14 +2678,14 @@ index c8c46e294431..d42d72ac2249 100644
  
  struct getdents_callback {
  	struct dir_context ctx;
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +	struct hymo_readdir_context hymo;
 +#endif
  	struct linux_dirent __user * current_dir;
  	int prev_reclen;
  	int count;
  	int error;
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +	bool buffer_full;
 +#endif
  };
@@ -2672,7 +2695,7 @@ index c8c46e294431..d42d72ac2249 100644
  		sizeof(long));
  	int prev_reclen;
  
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
++#ifdef CONFIG_KSU_HYMOFS
 +    if (hymofs_check_filldir(&buf->hymo, name, strlen(name))) return true;
 +#endif
 +
@@ -2683,7 +2706,7 @@ index c8c46e294431..d42d72ac2249 100644
  	buf->error = -EINVAL;	/* only used if we fail.. */
 -	if (reclen > buf->count)
 +	if (reclen > buf->count) {
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +		buf->buffer_full = true;
 +#endif
  		return false;
@@ -2691,11 +2714,11 @@ index c8c46e294431..d42d72ac2249 100644
  	d_ino = ino;
  	if (sizeof(d_ino) < sizeof(ino) && d_ino != ino) {
  		buf->error = -EOVERFLOW;
-@@ -312,12 +340,33 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
+@@ -312,12 +340,29 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
  		.ctx.actor = filldir,
  		.count = count,
  		.current_dir = dirent
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +		, .buffer_full = false
 +#endif
  	};
@@ -2704,10 +2727,8 @@ index c8c46e294431..d42d72ac2249 100644
  	f = fdget_pos(fd);
  	if (!f.file)
  		return -EBADF;
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
++#ifdef CONFIG_KSU_HYMOFS
 +	hymofs_prepare_readdir(&buf.hymo, f.file);
-+#endif
-+#ifdef CONFIG_HYMOFS_INJECT_ENTRIES
 +	if (f.file->f_pos >= HYMO_MAGIC_POS) {
 +		void __user *dir_ptr = buf.current_dir;
 +		int res = hymofs_inject_entries(&buf.hymo, &dir_ptr, &buf.count, &f.file->f_pos);
@@ -2715,9 +2736,7 @@ index c8c46e294431..d42d72ac2249 100644
 +			error = count - buf.count;
 +		else
 +			error = res;
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
 +		hymofs_cleanup_readdir(&buf.hymo);
-+#endif
 +		fdput_pos(f);
 +		return error;
 +	}
@@ -2725,19 +2744,17 @@ index c8c46e294431..d42d72ac2249 100644
  
  	error = iterate_dir(f.file, &buf.ctx);
  	if (error >= 0)
-@@ -331,16 +380,33 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
+@@ -331,16 +376,31 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
  		else
  			error = count - buf.count;
  	}
-+#ifdef CONFIG_HYMOFS_INJECT_ENTRIES
++#ifdef CONFIG_KSU_HYMOFS
 +	if (error >= 0 && !buf.buffer_full && buf.ctx.pos < HYMO_MAGIC_POS && !signal_pending(current)) {
 +		void __user *dir_ptr = buf.current_dir;
 +		int res = hymofs_inject_entries(&buf.hymo, &dir_ptr, &buf.count, &f.file->f_pos);
 +		if (res > 0)
 +			error = count - buf.count;
 +	}
-+#endif
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
 +	hymofs_cleanup_readdir(&buf.hymo);
 +#endif
  	fdput_pos(f);
@@ -2746,24 +2763,24 @@ index c8c46e294431..d42d72ac2249 100644
  
  struct getdents_callback64 {
  	struct dir_context ctx;
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +	struct hymo_readdir_context hymo;
 +#endif
  	struct linux_dirent64 __user * current_dir;
  	int prev_reclen;
  	int count;
  	int error;
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +	bool buffer_full;
 +#endif
  };
  
  static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
-@@ -353,15 +419,25 @@ static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
+@@ -353,15 +413,25 @@ static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
  		sizeof(u64));
  	int prev_reclen;
  
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
++#ifdef CONFIG_KSU_HYMOFS
 +	if (hymofs_check_filldir(&buf->hymo, name, namlen)) return true;
 +#endif
 +
@@ -2774,7 +2791,7 @@ index c8c46e294431..d42d72ac2249 100644
  	buf->error = -EINVAL;	/* only used if we fail.. */
 -	if (reclen > buf->count)
 +	if (reclen > buf->count) {
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +		buf->buffer_full = true;
 +#endif
  		return false;
@@ -2786,24 +2803,22 @@ index c8c46e294431..d42d72ac2249 100644
  	dirent = buf->current_dir;
  	prev = (void __user *)dirent - prev_reclen;
  	if (!user_write_access_begin(prev, reclen + prev_reclen))
-@@ -395,6 +471,9 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
+@@ -395,6 +465,9 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
  		.ctx.actor = filldir64,
  		.count = count,
  		.current_dir = dirent
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +		, .buffer_full = false
 +#endif
  	};
  	int error;
  
-@@ -402,6 +481,25 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
+@@ -402,6 +475,21 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
  	if (!f.file)
  		return -EBADF;
  
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
++#ifdef CONFIG_KSU_HYMOFS
 +	hymofs_prepare_readdir(&buf.hymo, f.file);
-+#endif
-+#ifdef CONFIG_HYMOFS_INJECT_ENTRIES
 +	if (f.file->f_pos >= HYMO_MAGIC_POS) {
 +		void __user *dir_ptr = buf.current_dir;
 +		int res = hymofs_inject_entries64(&buf.hymo, &dir_ptr, &buf.count, &f.file->f_pos);
@@ -2811,9 +2826,7 @@ index c8c46e294431..d42d72ac2249 100644
 +			error = count - buf.count;
 +		else
 +			error = res;
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
 +		hymofs_cleanup_readdir(&buf.hymo);
-+#endif
 +		fdput_pos(f);
 +		return error;
 +	}
@@ -2822,39 +2835,37 @@ index c8c46e294431..d42d72ac2249 100644
  	error = iterate_dir(f.file, &buf.ctx);
  	if (error >= 0)
  		error = buf.error;
-@@ -415,6 +513,17 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
+@@ -415,6 +503,15 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
  		else
  			error = count - buf.count;
  	}
-+#ifdef CONFIG_HYMOFS_INJECT_ENTRIES
++#ifdef CONFIG_KSU_HYMOFS
 +	if (error >= 0 && !buf.buffer_full && buf.ctx.pos < HYMO_MAGIC_POS && !signal_pending(current)) {
 +		void __user *dir_ptr = buf.current_dir;
 +		int res = hymofs_inject_entries64(&buf.hymo, &dir_ptr, &buf.count, &f.file->f_pos);
 +		if (res > 0)
 +			error = count - buf.count;
 +	}
-+#endif
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
 +	hymofs_cleanup_readdir(&buf.hymo);
 +#endif
  	fdput_pos(f);
  	return error;
  }
-@@ -429,6 +538,9 @@ struct compat_old_linux_dirent {
+@@ -429,6 +526,9 @@ struct compat_old_linux_dirent {
  
  struct compat_readdir_callback {
  	struct dir_context ctx;
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +	struct hymo_readdir_context hymo;
 +#endif
  	struct compat_old_linux_dirent __user *dirent;
  	int result;
  };
-@@ -484,10 +596,17 @@ COMPAT_SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
+@@ -484,10 +584,17 @@ COMPAT_SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
  	if (!f.file)
  		return -EBADF;
  
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
++#ifdef CONFIG_KSU_HYMOFS
 +	hymofs_prepare_readdir(&buf.hymo, f.file);
 +#endif
 +
@@ -2862,79 +2873,78 @@ index c8c46e294431..d42d72ac2249 100644
  	if (buf.result)
  		error = buf.result;
  
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
++#ifdef CONFIG_KSU_HYMOFS
 +	hymofs_cleanup_readdir(&buf.hymo);
 +#endif
  	fdput_pos(f);
  	return error;
  }
-@@ -501,6 +620,9 @@ struct compat_linux_dirent {
+@@ -501,6 +608,9 @@ struct compat_linux_dirent {
  
  struct compat_getdents_callback {
  	struct dir_context ctx;
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +	struct hymo_readdir_context hymo;
 +#endif
  	struct compat_linux_dirent __user *current_dir;
  	int prev_reclen;
  	int count;
-@@ -518,6 +640,10 @@ static bool compat_filldir(struct dir_context *ctx, const char *name, int namlen
+@@ -518,6 +628,10 @@ static bool compat_filldir(struct dir_context *ctx, const char *name, int namlen
  		namlen + 2, sizeof(compat_long_t));
  	int prev_reclen;
  
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
++#ifdef CONFIG_KSU_HYMOFS
 +    if (hymofs_check_filldir(&buf->hymo, name, namlen)) return true;
 +#endif
 +
  	buf->error = verify_dirent_name(name, namlen);
  	if (unlikely(buf->error))
  		return false;
-@@ -570,6 +696,10 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
+@@ -570,6 +684,10 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
  	if (!f.file)
  		return -EBADF;
  
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
++#ifdef CONFIG_KSU_HYMOFS
 +	hymofs_prepare_readdir(&buf.hymo, f.file);
 +#endif
 +
  	error = iterate_dir(f.file, &buf.ctx);
  	if (error >= 0)
  		error = buf.error;
-@@ -582,6 +712,9 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
+@@ -582,6 +700,9 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
  		else
  			error = count - buf.count;
  	}
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
++#ifdef CONFIG_KSU_HYMOFS
 +	hymofs_cleanup_readdir(&buf.hymo);
 +#endif
  	fdput_pos(f);
  	return error;
  }
 diff --git a/fs/stat.c b/fs/stat.c
-index 517fa4ed885e..82a68c49980f 100644
+index 517fa4ed885e..2cdd81e750a0 100644
 --- a/fs/stat.c
 +++ b/fs/stat.c
 @@ -26,6 +26,10 @@
  #include "internal.h"
  #include "mount.h"
  
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +#include <linux/hymofs.h>
 +#endif
 +
  /**
   * generic_fillattr - Fill in the basic attributes from the inode struct
   * @idmap:		idmap of the mount the inode was found from
-@@ -131,12 +135,38 @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
+@@ -131,12 +135,36 @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
  				  STATX_ATTR_DAX);
  
  	idmap = mnt_idmap(path->mnt);
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +	if (inode->i_op->getattr) {
 +		int ret = inode->i_op->getattr(idmap, path, stat,
 +					    request_mask,
 +					    query_flags | AT_GETATTR_NOSEC);
-+#ifdef CONFIG_HYMOFS_STAT_SPOOF
 +        if (ret == 0) {
 +            hymofs_spoof_stat(path, stat);
 +            /* Apply full kstat spoofing if configured for this inode */
@@ -2942,7 +2952,6 @@ index 517fa4ed885e..82a68c49980f 100644
 +                hymofs_spoof_kstat_by_ino(inode->i_ino, stat);
 +            }
 +        }
-+#endif
 +        return ret;
 +    }
 +#else
@@ -2953,7 +2962,7 @@ index 517fa4ed885e..82a68c49980f 100644
 +#endif
  
  	generic_fillattr(idmap, request_mask, inode, stat);
-+#ifdef CONFIG_HYMOFS_STAT_SPOOF
++#ifdef CONFIG_KSU_HYMOFS
 +	/* HymoFS: Spoof timestamps if needed */
 +	hymofs_spoof_stat(path, stat);
 +	/* Apply full kstat spoofing if configured for this inode */
@@ -2964,22 +2973,22 @@ index 517fa4ed885e..82a68c49980f 100644
  	return 0;
  }
  EXPORT_SYMBOL(vfs_getattr_nosec);
-@@ -235,6 +265,9 @@ static int vfs_statx(int dfd, struct filename *filename, int flags,
+@@ -235,6 +263,9 @@ static int vfs_statx(int dfd, struct filename *filename, int flags,
  	struct path path;
  	unsigned int lookup_flags = getname_statx_lookup_flags(flags);
  	int error;
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +	struct filename *hymo_filename = NULL;
 +#endif
  
  	if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH |
  		      AT_STATX_SYNC_TYPE))
-@@ -242,6 +275,15 @@ static int vfs_statx(int dfd, struct filename *filename, int flags,
+@@ -242,6 +273,15 @@ static int vfs_statx(int dfd, struct filename *filename, int flags,
  
  retry:
  	error = filename_lookup(dfd, filename, lookup_flags, &path, NULL);
 +	
-+#ifdef CONFIG_HYMOFS_FORWARD_REDIRECT
++#ifdef CONFIG_KSU_HYMOFS
 +	/* HymoFS: Handle merge directory - relative path + dirfd case */
 +	if (error == -ENOENT && dfd >= 0 && filename->name[0] != '/') {
 +		hymo_filename = hymofs_resolve_relative(dfd, filename->name);
@@ -2990,11 +2999,11 @@ index 517fa4ed885e..82a68c49980f 100644
  	if (error)
  		goto out;
  
-@@ -268,6 +310,10 @@ static int vfs_statx(int dfd, struct filename *filename, int flags,
+@@ -268,6 +308,10 @@ static int vfs_statx(int dfd, struct filename *filename, int flags,
  		goto retry;
  	}
  out:
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +	if (hymo_filename)
 +		putname(hymo_filename);
 +#endif
@@ -3002,14 +3011,14 @@ index 517fa4ed885e..82a68c49980f 100644
  }
  
 diff --git a/fs/xattr.c b/fs/xattr.c
-index a6eb8cbc7b4c..0e90d43fb57e 100644
+index a6eb8cbc7b4c..743f9f969170 100644
 --- a/fs/xattr.c
 +++ b/fs/xattr.c
 @@ -25,6 +25,9 @@
  #include <linux/posix_acl_xattr.h>
  
  #include <linux/uaccess.h>
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +#include <linux/hymofs.h>
 +#endif
  
@@ -3019,18 +3028,18 @@ index a6eb8cbc7b4c..0e90d43fb57e 100644
  {
  	ssize_t error;
  	char *kname = ctx->kname->name;
-+#ifdef CONFIG_HYMOFS_XATTR_FILTER
++#ifdef CONFIG_KSU_HYMOFS
 +	if (hymofs_is_overlay_xattr(d, kname))
 +		return -ENODATA;
 +#endif
  
  	if (ctx->size) {
  		if (ctx->size > XATTR_SIZE_MAX)
-@@ -831,6 +838,37 @@ listxattr(struct dentry *d, char __user *list, size_t size)
+@@ -831,6 +838,35 @@ listxattr(struct dentry *d, char __user *list, size_t size)
  	ssize_t error;
  	char *klist = NULL;
  
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +	size_t alloc_size = size;
 +
 +	if (!size) {
@@ -3049,9 +3058,7 @@ index a6eb8cbc7b4c..0e90d43fb57e 100644
 +
 +	error = vfs_listxattr(d, klist, alloc_size);
 +	if (error > 0) {
-+#ifdef CONFIG_HYMOFS_XATTR_FILTER
 +		error = hymofs_filter_xattrs(d, klist, error);
-+#endif
 +
 +		if (size && copy_to_user(list, klist, error))
 +			error = -EFAULT;
@@ -3064,7 +3071,7 @@ index a6eb8cbc7b4c..0e90d43fb57e 100644
  	if (size) {
  		if (size > XATTR_LIST_MAX)
  			size = XATTR_LIST_MAX;
-@@ -848,6 +886,7 @@ listxattr(struct dentry *d, char __user *list, size_t size)
+@@ -848,6 +884,7 @@ listxattr(struct dentry *d, char __user *list, size_t size)
  		   than XATTR_LIST_MAX bytes. Not possible. */
  		error = -E2BIG;
  	}
@@ -3074,10 +3081,10 @@ index a6eb8cbc7b4c..0e90d43fb57e 100644
  
 diff --git a/include/linux/hymo_magic.h b/include/linux/hymo_magic.h
 new file mode 100644
-index 000000000000..59ccc44af738
+index 000000000000..774a3bcec6b2
 --- /dev/null
 +++ b/include/linux/hymo_magic.h
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,143 @@
 +#ifndef _LINUX_HYMO_MAGIC_H
 +#define _LINUX_HYMO_MAGIC_H
 +
@@ -3094,7 +3101,6 @@ index 000000000000..59ccc44af738
 +#define HYMO_MAGIC1 0x48594D4F // "HYMO"
 +#define HYMO_MAGIC2 0x524F4F54 // "ROOT"
 +#define HYMO_PROTOCOL_VERSION 10
-+#define HYMO_DEVICE_NAME "hymo"
 +
 +#define HYMO_MAX_LEN_PATHNAME 256
 +#define HYMO_FAKE_CMDLINE_SIZE 4096
@@ -3129,6 +3135,7 @@ index 000000000000..59ccc44af738
 +#define HYMO_CMD_HIDE_OVERLAY_XATTRS 0x48011
 +#define HYMO_CMD_ADD_MERGE_RULE 0x48012
 +#define HYMO_CMD_SET_MIRROR_PATH 0x48014
++// New commands for enhanced spoofing
 +#define HYMO_CMD_ADD_SPOOF_KSTAT 0x48015
 +#define HYMO_CMD_UPDATE_SPOOF_KSTAT 0x48016
 +#define HYMO_CMD_SET_UNAME 0x48017
@@ -3193,6 +3200,7 @@ index 000000000000..59ccc44af738
 +#define HYMO_FEATURE_KSTAT_SPOOF    (1 << 0)
 +#define HYMO_FEATURE_UNAME_SPOOF    (1 << 1)
 +#define HYMO_FEATURE_CMDLINE_SPOOF  (1 << 2)
++#define HYMO_FEATURE_AVC_SPOOF      (1 << 3)
 +#define HYMO_FEATURE_SELINUX_BYPASS (1 << 4)
 +#define HYMO_FEATURE_MERGE_DIR      (1 << 5)
 +
@@ -3210,22 +3218,23 @@ index 000000000000..59ccc44af738
 +#define HYMO_IOC_SET_STEALTH        _IOW(HYMO_IOC_MAGIC, 10, int)
 +#define HYMO_IOC_HIDE_OVERLAY_XATTRS _IOW(HYMO_IOC_MAGIC, 11, struct hymo_syscall_arg)
 +#define HYMO_IOC_ADD_MERGE_RULE     _IOW(HYMO_IOC_MAGIC, 12, struct hymo_syscall_arg)
++#define HYMO_IOC_SET_AVC_LOG_SPOOFING _IOW(HYMO_IOC_MAGIC, 13, int)
 +#define HYMO_IOC_SET_MIRROR_PATH    _IOW(HYMO_IOC_MAGIC, 14, struct hymo_syscall_arg)
++// New ioctl for enhanced spoofing
 +#define HYMO_IOC_ADD_SPOOF_KSTAT    _IOW(HYMO_IOC_MAGIC, 15, struct hymo_spoof_kstat)
 +#define HYMO_IOC_UPDATE_SPOOF_KSTAT _IOW(HYMO_IOC_MAGIC, 16, struct hymo_spoof_kstat)
 +#define HYMO_IOC_SET_UNAME          _IOW(HYMO_IOC_MAGIC, 17, struct hymo_spoof_uname)
 +#define HYMO_IOC_SET_CMDLINE        _IOW(HYMO_IOC_MAGIC, 18, struct hymo_spoof_cmdline)
 +#define HYMO_IOC_GET_FEATURES       _IOR(HYMO_IOC_MAGIC, 19, int)
-+#define HYMO_IOC_SET_ENABLED        _IOW(HYMO_IOC_MAGIC, 20, int)
 +
 +#endif /* _LINUX_HYMO_MAGIC_H */
 \ No newline at end of file
 diff --git a/include/linux/hymofs.h b/include/linux/hymofs.h
 new file mode 100644
-index 000000000000..5f1dd632153e
+index 000000000000..4861a8739e6a
 --- /dev/null
 +++ b/include/linux/hymofs.h
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,292 @@
 +#ifndef _LINUX_HYMOFS_H
 +#define _LINUX_HYMOFS_H
 +
@@ -3236,7 +3245,39 @@ index 000000000000..5f1dd632153e
 +#include <linux/thread_info.h> /* For thread_info flags */
 +#include <linux/sched.h> /* For current */
 +
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
++
++/*
++ * HymoFS Process Marking - INVERTED from SUSFS for efficiency!
++ * 
++ * KEY INSIGHT: On most phones, unprivileged apps >> privileged apps
++ * SUSFS marks thousands of unprivileged processes = wasteful + side-channel risk
++ * 
++ * OUR APPROACH: Mark only the FEW privileged processes
++ * - Default (unmarked): Process CANNOT see KSU/module files (hidden)
++ * - TIF_HYMO_PRIVILEGED: Process CAN see everything (manager/allowlist apps)
++ * 
++ * Benefits:
++ * - Far fewer marking operations (only a handful of privileged apps)
++ * - No side-channel timing attacks (marking is rare)
++ * - Default-secure: new processes can't see privileged files
++ */
++#define TIF_HYMO_PRIVILEGED 34  /* Process is privileged, can see KSU files */
++
++static inline bool hymofs_is_proc_privileged(void)
++{
++	return test_thread_flag(TIF_HYMO_PRIVILEGED);
++}
++
++static inline void hymofs_set_proc_privileged(void)
++{
++	set_thread_flag(TIF_HYMO_PRIVILEGED);
++}
++
++static inline void hymofs_clear_proc_privileged(void)
++{
++	clear_thread_flag(TIF_HYMO_PRIVILEGED);
++}
 +
 +#define HYMO_MAGIC_POS 0x7000000000000000ULL
 +
@@ -3278,48 +3319,36 @@ index 000000000000..5f1dd632153e
 +    struct hlist_head merge_files[HYMO_MERGE_HASH_SIZE]; /* Pre-built hash of merge target filenames */
 +};
 +
-+extern bool hymofs_enabled;
++extern atomic_t hymo_atomiconfig;
 +
-+/* Syscall hook for legacy mode */
-+extern int (*hymo_dispatch_cmd_hook)(unsigned int cmd, void __user *arg);
-+
-+/* ========== Directory entry hiding/injection ========== */
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
 +void __hymofs_prepare_readdir(struct hymo_readdir_context *ctx, struct file *file);
 +void __hymofs_cleanup_readdir(struct hymo_readdir_context *ctx);
 +bool __hymofs_check_filldir(struct hymo_readdir_context *ctx, const char *name, int namlen);
-+#endif
-+
-+#ifdef CONFIG_HYMOFS_INJECT_ENTRIES
 +int hymofs_inject_entries(struct hymo_readdir_context *ctx, void __user **dir_ptr, int *count, loff_t *pos);
 +int hymofs_inject_entries64(struct hymo_readdir_context *ctx, void __user **dir_ptr, int *count, loff_t *pos);
-+#endif
-+
-+/* ========== Stat spoofing ========== */
-+#ifdef CONFIG_HYMOFS_STAT_SPOOF
 +void hymofs_spoof_stat(const struct path *path, struct kstat *stat);
-+void hymofs_spoof_kstat_by_ino(unsigned long ino, struct kstat *stat);
-+bool hymofs_is_kstat_spoofed(struct inode *inode);
-+#endif
-+
-+/* ========== Extended attributes filtering ========== */
-+#ifdef CONFIG_HYMOFS_XATTR_FILTER
 +ssize_t hymofs_filter_xattrs(struct dentry *dentry, char *klist, ssize_t len);
 +bool hymofs_is_overlay_xattr(struct dentry *dentry, const char *name);
-+#endif
 +
-+/* ========== Uname spoofing ========== */
-+#ifdef CONFIG_HYMOFS_UNAME_SPOOF
++/* init/exit for KSU integration */
++int hymofs_init(void);
++void hymofs_exit(void);
++
++/* HymoFS command dispatch - called via KSU supercalls */
++int hymo_dispatch_cmd(unsigned int cmd, void __user *arg);
++
++/* kstat spoofing - full stat() result manipulation */
++void hymofs_spoof_kstat_by_ino(unsigned long ino, struct kstat *stat);
++bool hymofs_is_kstat_spoofed(struct inode *inode);
++
++/* uname spoofing */
 +struct new_utsname;
 +void hymofs_spoof_uname(struct new_utsname *name);
-+#endif
 +
-+/* ========== Cmdline spoofing ========== */
-+#ifdef CONFIG_HYMOFS_CMDLINE_SPOOF
++/* cmdline spoofing */
 +struct seq_file;
 +int hymofs_spoof_cmdline(struct seq_file *m);
 +bool hymofs_is_cmdline_spoofed(void);
-+#endif
 +
 +struct hymo_name_list {
 +    char *name;
@@ -3327,26 +3356,35 @@ index 000000000000..5f1dd632153e
 +    struct list_head list;
 +};
 +
-+/* ========== Forward redirection (namei) ========== */
-+#ifdef CONFIG_HYMOFS_FORWARD_REDIRECT
 +struct filename;
 +struct filename *hymofs_handle_getname(struct filename *result);
 +struct filename *hymofs_resolve_relative(int dfd, const char *name);
++
 +char *__hymofs_resolve_target(const char *pathname);
-+#endif
-+
-+/* ========== Reverse lookup (d_path) ========== */
-+#ifdef CONFIG_HYMOFS_REVERSE_LOOKUP
 +int __hymofs_reverse_lookup(const char *pathname, char *buf, size_t buflen);
-+#endif
-+
-+/* ========== Path hiding ========== */
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
 +bool __hymofs_should_hide(const char *pathname, size_t len);
 +bool __hymofs_should_spoof_mtime(const char *pathname);
 +int hymofs_populate_injected_list(const char *dir_path, struct dentry *parent, struct list_head *head);
++
++/* Fast O(1) inode-based hide check - core function */
 +bool __hymofs_is_inode_hidden(struct inode *inode);
-+#endif
++
++/* KSU domain check - from KernelSU */
++extern bool is_ksu_domain(void);
++
++/* KSU allowlist check - from KernelSU */
++extern bool __ksu_is_allow_uid_for_current(uid_t uid);
++#define ksu_is_allow_uid_for_current(uid) unlikely(__ksu_is_allow_uid_for_current(uid))
++
++/* Check if current process is KSU privileged (manager or allowlist) - defined in hymofs.c */
++bool __hymofs_is_ksu_privileged(void);
++#define hymofs_is_ksu_privileged() unlikely(__hymofs_is_ksu_privileged())
++
++/* 
++ * DEBUG MODE - Completely disable hiding for debugging
++ * Remove this before release!
++ */
++// #define HYMOFS_DEBUG_DISABLE_HIDING 1
 +
 +/* 
 + * Inline wrapper with fast-path checks
@@ -3356,7 +3394,15 @@ index 000000000000..5f1dd632153e
 + */
 +static __always_inline bool hymofs_is_inode_hidden(struct inode *inode)
 +{
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
++#ifdef HYMOFS_DEBUG_DISABLE_HIDING
++    /* DEBUG: Completely disable hiding */
++    return false;
++#endif
++
++    /* Early boot protection - critical! */
++    if (system_state < SYSTEM_RUNNING)
++        return false;
++    
 +    /* Fast path: NULL checks */
 +    if (unlikely(!inode || !inode->i_mapping))
 +        return false;
@@ -3364,89 +3410,93 @@ index 000000000000..5f1dd632153e
 +    /* Fast path: Root sees everything */
 +    if (uid_eq(current_uid(), GLOBAL_ROOT_UID))
 +        return false;
++
++    /* Fast path: Privileged process can see everything */
++    if (hymofs_is_proc_privileged())
++        return false;
 +    
 +    /* Fast path: No rules loaded */
-+    if (!hymofs_enabled)
++    if (atomic_read(&hymo_atomiconfig) == 0)
 +        return false;
 +    
 +    return __hymofs_is_inode_hidden(inode);
-+#else
-+    return false;
-+#endif
 +}
 +
 +static inline void hymofs_prepare_readdir(struct hymo_readdir_context *ctx, struct file *file)
 +{
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
 +    ctx->path_buf = NULL;
 +    ctx->file = file;
-+    if (!hymofs_enabled) return;
-+    __hymofs_prepare_readdir(ctx, file);
++#ifdef HYMOFS_DEBUG_DISABLE_HIDING
++    /* DEBUG: Completely disable readdir hiding */
++    return;
 +#endif
++    if (system_state < SYSTEM_RUNNING) return;
++    if (uid_eq(current_uid(), GLOBAL_ROOT_UID)) return;
++    if (hymofs_is_proc_privileged()) return;  /* Privileged = can see all */
++    if (atomic_read(&hymo_atomiconfig) == 0) return;
++    __hymofs_prepare_readdir(ctx, file);
 +}
 +
 +static inline void hymofs_cleanup_readdir(struct hymo_readdir_context *ctx)
 +{
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
 +    if (ctx->path_buf) __hymofs_cleanup_readdir(ctx);
-+#endif
 +}
 +
 +static inline bool hymofs_check_filldir(struct hymo_readdir_context *ctx, const char *name, int namlen)
 +{
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
-+    if (!ctx->path_buf) return false;
-+    return __hymofs_check_filldir(ctx, name, namlen);
-+#else
++#ifdef HYMOFS_DEBUG_DISABLE_HIDING
++    /* DEBUG: Completely disable filldir hiding */
 +    return false;
 +#endif
++    if (!ctx->path_buf) return false;
++    return __hymofs_check_filldir(ctx, name, namlen);
 +}
 +
 +static inline char *hymofs_resolve_target(const char *pathname)
 +{
-+#ifdef CONFIG_HYMOFS_FORWARD_REDIRECT
-+    if (!hymofs_enabled) return NULL;
++    if (system_state < SYSTEM_RUNNING) return NULL;
++    /* Skip for privileged processes - check mark first */
++    if (uid_eq(current_uid(), GLOBAL_ROOT_UID)) return NULL;
++    if (hymofs_is_proc_privileged()) return NULL;  /* Privileged = can see all */
++    if (atomic_read(&hymo_atomiconfig) == 0) return NULL;
 +    return __hymofs_resolve_target(pathname);
-+#else
-+    return NULL;
-+#endif
 +}
 +
 +static inline int hymofs_reverse_lookup(const char *pathname, char *buf, size_t buflen)
 +{
-+#ifdef CONFIG_HYMOFS_REVERSE_LOOKUP
-+    if (!hymofs_enabled) return -1;
++    if (system_state < SYSTEM_RUNNING) return -1;
++    if (uid_eq(current_uid(), GLOBAL_ROOT_UID)) return -1;
++    if (hymofs_is_proc_privileged()) return -1;  /* Privileged = can see all */
++    if (atomic_read(&hymo_atomiconfig) == 0) return -1;
 +    return __hymofs_reverse_lookup(pathname, buf, buflen);
-+#else
-+    return -1;
-+#endif
 +}
 +
 +static inline bool hymofs_should_hide(const char *pathname)
 +{
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
-+    if (!hymofs_enabled) return false;
++#ifdef HYMOFS_DEBUG_DISABLE_HIDING
++    /* DEBUG: Completely disable path hiding */
++    return false;
++#endif
++    if (system_state < SYSTEM_RUNNING) return false;
++    if (uid_eq(current_uid(), GLOBAL_ROOT_UID)) return false;
++    if (hymofs_is_proc_privileged()) return false;  /* Privileged = can see all */
++    if (atomic_read(&hymo_atomiconfig) == 0) return false;
 +    /* Fast path: check for NULL or empty */
 +    if (!pathname || !*pathname) return false;
 +    return __hymofs_should_hide(pathname, strlen(pathname));
-+#else
-+    return false;
-+#endif
 +}
 +
 +static inline bool hymofs_should_spoof_mtime(const char *pathname)
 +{
-+#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
-+    if (!hymofs_enabled) return false;
++    if (system_state < SYSTEM_RUNNING) return false;
++    if (uid_eq(current_uid(), GLOBAL_ROOT_UID)) return false;
++    if (hymofs_is_proc_privileged()) return false;  /* Privileged = can see all */
++    if (atomic_read(&hymo_atomiconfig) == 0) return false;
 +    return __hymofs_should_spoof_mtime(pathname);
-+#else
-+    return false;
-+#endif
 +}
 +
 +#else
 +
-+/* ========== CONFIG_HYMOFS disabled - all stubs ========== */
 +struct hymo_readdir_context {};
 +static inline void hymofs_prepare_readdir(struct hymo_readdir_context *ctx, struct file *file) {}
 +static inline void hymofs_cleanup_readdir(struct hymo_readdir_context *ctx) {}
@@ -3456,10 +3506,14 @@ index 000000000000..5f1dd632153e
 +static inline void hymofs_spoof_stat(const struct path *path, struct kstat *stat) {}
 +static inline ssize_t hymofs_filter_xattrs(struct dentry *dentry, char *klist, ssize_t len) { return len; }
 +static inline bool hymofs_is_overlay_xattr(struct dentry *dentry, const char *name) { return false; }
++
++static inline int hymofs_init(void) { return 0; }
++static inline void hymofs_exit(void) {}
++
 +static inline struct filename *hymofs_handle_getname(struct filename *result) { return result; }
 +static inline struct filename *hymofs_resolve_relative(int dfd, const char *name) { return NULL; }
 +static inline char *hymofs_resolve_target(const char *pathname) { return NULL; }
-+static inline int hymofs_reverse_lookup(const char *pathname, char *buf, size_t buflen) { return -1; }
++static inline char *hymofs_reverse_lookup(const char *pathname) { return NULL; }
 +static inline bool hymofs_should_hide(const char *pathname) { return false; }
 +static inline bool hymofs_should_spoof_mtime(const char *pathname) { return false; }
 +static inline int hymofs_populate_injected_list(const char *dir_path, struct dentry *parent, struct list_head *head) { return 0; }
@@ -3470,59 +3524,68 @@ index 000000000000..5f1dd632153e
 +static inline int hymofs_spoof_cmdline(struct seq_file *m) { return 1; }
 +static inline bool hymofs_is_cmdline_spoofed(void) { return false; }
 +
-+#endif /* CONFIG_HYMOFS */
++#endif /* CONFIG_KSU_HYMOFS */
 +
 +#endif /* _LINUX_HYMOFS_H */
 diff --git a/kernel/reboot.c b/kernel/reboot.c
-index 344ceaf5ed13..b4f73eb4fd55 100644
+index 344ceaf5ed13..33614b5b6d2f 100644
 --- a/kernel/reboot.c
 +++ b/kernel/reboot.c
 @@ -18,6 +18,9 @@
  #include <linux/syscalls.h>
  #include <linux/syscore_ops.h>
  #include <linux/uaccess.h>
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +#include <linux/hymo_magic.h>
 +#endif
  
  #include <trace/hooks/reboot.h>
  
-@@ -29,6 +32,12 @@ static int C_A_D = 1;
+@@ -29,6 +32,11 @@ static int C_A_D = 1;
  struct pid *cad_pid;
  EXPORT_SYMBOL(cad_pid);
  
-+#ifdef CONFIG_HYMOFS
-+/* HymoFS Hook */
-+int (*hymo_dispatch_cmd_hook)(unsigned int cmd, void __user *arg) = NULL;
-+EXPORT_SYMBOL(hymo_dispatch_cmd_hook);
++#ifdef CONFIG_KSU_HYMOFS
++/* HymoFS: direct function declaration for inline mode */
++extern int hymo_dispatch_cmd(unsigned int cmd, void __user *arg);
 +#endif
 +
  #if defined(CONFIG_ARM)
  #define DEFAULT_REBOOT_MODE		= REBOOT_HARD
  #else
-@@ -708,6 +717,13 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
+@@ -708,6 +716,23 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
  	char buffer[256];
  	int ret = 0;
  
-+#ifdef CONFIG_HYMOFS
-+	/* HymoFS Hook */
-+	if (magic1 == HYMO_MAGIC1 && magic2 == HYMO_MAGIC2 && hymo_dispatch_cmd_hook) {
-+		return hymo_dispatch_cmd_hook(cmd, arg);
++#ifdef CONFIG_KSU_HYMOFS
++	/* HymoFS: direct syscall hook */
++	if (magic1 == HYMO_MAGIC1 && magic2 == HYMO_MAGIC2) {
++		return hymo_dispatch_cmd(cmd, arg);
 +	}
 +#endif
++
++#ifdef CONFIG_KSU
++	/* KSU: Install fd supercall - must return immediately to avoid EPERM */
++	if (magic1 == 0xDEADBEEF) {
++		extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
++		ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
++		return 0;  /* Don't continue to CAP_SYS_BOOT check */
++	}
++#endif
++
 +
  	/* We only trust the superuser with rebooting the system. */
  	if (!ns_capable(pid_ns->user_ns, CAP_SYS_BOOT))
  		return -EPERM;
 diff --git a/kernel/sys.c b/kernel/sys.c
-index 74bed736f6a8..825b91679dd2 100644
+index 74bed736f6a8..0d7eca1e8902 100644
 --- a/kernel/sys.c
 +++ b/kernel/sys.c
 @@ -78,6 +78,9 @@
  #include "uid16.h"
  
  #include <trace/hooks/sys.h>
-+#ifdef CONFIG_HYMOFS
++#ifdef CONFIG_KSU_HYMOFS
 +#include <linux/hymofs.h>
 +#endif
  
@@ -3532,7 +3595,7 @@ index 74bed736f6a8..825b91679dd2 100644
  	down_read(&uts_sem);
  	memcpy(&tmp, utsname(), sizeof(tmp));
  	up_read(&uts_sem);
-+#ifdef CONFIG_HYMOFS_UNAME_SPOOF
++#ifdef CONFIG_KSU_HYMOFS
 +	hymofs_spoof_uname(&tmp);
 +#endif
  	if (copy_to_user(name, &tmp, sizeof(tmp)))
@@ -3542,7 +3605,7 @@ index 74bed736f6a8..825b91679dd2 100644
  	down_read(&uts_sem);
  	memcpy(&tmp, utsname(), sizeof(tmp));
  	up_read(&uts_sem);
-+#ifdef CONFIG_HYMOFS_UNAME_SPOOF
++#ifdef CONFIG_KSU_HYMOFS
 +	hymofs_spoof_uname((struct new_utsname *)&tmp);
 +#endif
  	if (copy_to_user(name, &tmp, sizeof(tmp)))
