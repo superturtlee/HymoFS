@@ -3008,22 +3008,21 @@ index ef50573c7..ef19997de 100644
  }
  
 diff --git a/fs/xattr.c b/fs/xattr.c
-index 427b8cea1..081b78850 100644
+index 427b8cea1..4a8c66b29 100644
 --- a/fs/xattr.c
 +++ b/fs/xattr.c
-@@ -27,6 +27,11 @@
+@@ -27,6 +27,10 @@
  
  #include "internal.h"
  
 +#ifdef CONFIG_HYMOFS
-+	if (hymo_filename)
-+		putname(hymo_filename);
++#include <linux/hymofs.h>
 +#endif
 +
  static const char *
  strcmp_prefix(const char *a, const char *a_prefix)
  {
-@@ -688,6 +693,10 @@ do_getxattr(struct user_namespace *mnt_userns, struct dentry *d,
+@@ -688,6 +692,10 @@ do_getxattr(struct user_namespace *mnt_userns, struct dentry *d,
  {
  	ssize_t error;
  	char *kname = ctx->kname->name;
@@ -3034,7 +3033,7 @@ index 427b8cea1..081b78850 100644
  
  	if (ctx->size) {
  		if (ctx->size > XATTR_SIZE_MAX)
-@@ -793,6 +802,37 @@ listxattr(struct dentry *d, char __user *list, size_t size)
+@@ -793,6 +801,37 @@ listxattr(struct dentry *d, char __user *list, size_t size)
  	ssize_t error;
  	char *klist = NULL;
  
@@ -3072,7 +3071,7 @@ index 427b8cea1..081b78850 100644
  	if (size) {
  		if (size > XATTR_LIST_MAX)
  			size = XATTR_LIST_MAX;
-@@ -810,6 +850,7 @@ listxattr(struct dentry *d, char __user *list, size_t size)
+@@ -810,6 +849,7 @@ listxattr(struct dentry *d, char __user *list, size_t size)
  		   than XATTR_LIST_MAX bytes. Not possible. */
  		error = -E2BIG;
  	}
