@@ -142,14 +142,14 @@ index 410a8f553..eb30ad9f0 100644
 +
  endmenu
 diff --git a/fs/Makefile b/fs/Makefile
-index 102e4cd2b..af846a467 100644
+index 102e4cd2b..967d67f3f 100644
 --- a/fs/Makefile
 +++ b/fs/Makefile
 @@ -17,6 +17,8 @@ obj-y :=	open.o read_write.o file_table.o super.o \
  		fs_types.o fs_context.o fs_parser.o fsopen.o init.o \
  		kernel_read_file.o remap_range.o
  
-++obj-$(CONFIG_HYMOFS) += hymofs.o
++obj-$(CONFIG_HYMOFS) += hymofs.o
 +
  ifeq ($(CONFIG_BLOCK),y)
  obj-y +=	buffer.o direct-io.o mpage.o
