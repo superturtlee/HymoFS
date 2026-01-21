@@ -5,12 +5,12 @@
 set -e
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-KERNEL_REPO="$REPO_ROOT/patch_workspace/origin"
+KERNEL_REPO="$REPO_ROOT/patch_workspace/android15-6.6/common"
 PATCH_DIR="$REPO_ROOT/patch"
 
 # Branch names (customize as needed)
-ORIGIN_BRANCH="oneplus/mt6991_v_15.0.2_ace5_ultra_6.6.89"
-SINGLE_MODIFIED_BRANCH="single-hymofs-modified"
+ORIGIN_BRANCH="android15-6.6"
+MODIFIED_BRANCH="hymofs-modified"
 
 # Check if kernel repo exists
 if [ ! -d "$KERNEL_REPO/.git" ]; then
@@ -28,25 +28,25 @@ if ! git rev-parse --verify "$ORIGIN_BRANCH" >/dev/null 2>&1; then
     exit 0
 fi
 
-if ! git rev-parse --verify "$SINGLE_MODIFIED_BRANCH" >/dev/null 2>&1; then
-    echo "[pre-commit] Modified branch '$SINGLE_MODIFIED_BRANCH' not found, skipping"
+if ! git rev-parse --verify "$MODIFIED_BRANCH" >/dev/null 2>&1; then
+    echo "[pre-commit] Modified branch '$MODIFIED_BRANCH' not found, skipping"
     exit 0
 fi
 
 # Generate patch
-SINGLE_PATCH_FILE="$PATCH_DIR/hymofs.patch"
-git diff "$ORIGIN_BRANCH".."$SINGLE_MODIFIED_BRANCH" > "$SINGLE_PATCH_FILE"
+PATCH_FILE="$PATCH_DIR/hymofs.patch"
+git diff "$ORIGIN_BRANCH".."$MODIFIED_BRANCH" > "$PATCH_FILE"
 
 # Check if patch changed
 cd "$REPO_ROOT"
-if  git diff --quiet "$SINGLE_PATCH_FILE" 2>/dev/null; then
+if  git diff --quiet "$PATCH_FILE" 2>/dev/null; then
     echo "[pre-commit] Patch unchanged"
 else
     echo "[pre-commit] Patch updated, staging..."
-    git add "$SINGLE_PATCH_FILE"
+    git add "$PATCH_FILE"
     
     # Show stats
-    STATS=$(cd "$KERNEL_REPO" && git diff --stat "$ORIGIN_BRANCH".."$SINGLE_MODIFIED_BRANCH" | tail -1)
+    STATS=$(cd "$KERNEL_REPO" && git diff --stat "$ORIGIN_BRANCH".."$MODIFIED_BRANCH" | tail -1)
     echo "[pre-commit] $STATS"
 fi
 
