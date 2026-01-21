@@ -191,7 +191,7 @@ index 5f4da5c8d5db..ebc740c700f4 100644
  
 diff --git a/fs/hymofs.c b/fs/hymofs.c
 new file mode 100644
-index 000000000000..0c4fb35a9cee
+index 000000000000..d7dfd99964b6
 --- /dev/null
 +++ b/fs/hymofs.c
 @@ -0,0 +1,2422 @@
@@ -330,6 +330,17 @@ index 000000000000..0c4fb35a9cee
 +    .bloom_rejects = ATOMIC64_INIT(0),
 +    .rule_hits = ATOMIC64_INIT(0),
 +};
++
++static struct hymo_uname_info {
++	char sysname[65];
++	char nodename[65];
++	char release[65];
++	char version[65];
++	char machine[65];
++	char domainname[65];
++} hymo_uname_info = { 0 };
++
++static DEFINE_SPINLOCK(hymo_uname_lock);
 +
 +/* RCU callback functions for deferred free */
 +static void hymo_entry_free_rcu(struct rcu_head *head)
@@ -2483,17 +2494,6 @@ index 000000000000..0c4fb35a9cee
 + * Allows spoofing kernel version reported by uname()
 + */
 +
-+static struct hymo_uname_info {
-+	char sysname[65];
-+	char nodename[65];
-+	char release[65];
-+	char version[65];
-+	char machine[65];
-+	char domainname[65];
-+} hymo_uname_info = { 0 };
-+
-+static DEFINE_SPINLOCK(hymo_uname_lock);
-+
 +void hymofs_spoof_uname(struct new_utsname *name)
 +{
 +	if (!name)
@@ -3275,10 +3275,10 @@ index 000000000000..66e1e5a09914
 \ No newline at end of file
 diff --git a/include/linux/hymofs.h b/include/linux/hymofs.h
 new file mode 100644
-index 000000000000..a9c0a1dedb6c
+index 000000000000..300332fba748
 --- /dev/null
 +++ b/include/linux/hymofs.h
-@@ -0,0 +1,273 @@
+@@ -0,0 +1,274 @@
 +#ifndef _LINUX_HYMOFS_H
 +#define _LINUX_HYMOFS_H
 +
@@ -3310,6 +3310,7 @@ index 000000000000..a9c0a1dedb6c
 +#define HYMO_CMD_HIDE_RULE          110
 +#define HYMO_CMD_HIDE_OVERLAY_XATTRS 111
 +#define HYMO_CMD_DEL_RULE           112
++#define HYMO_CMD_SET_UNAME          115
 +
 +struct hymo_merge_target_node {
 +    struct list_head list;
