@@ -1,24 +1,34 @@
 #!/bin/bash
 # Pre-commit hook for HymoFS repository
 # Automatically generates patch from kernel submodule before commit
+# Branch-aware: android14_6.1 -> android14-6.1 workspace, android15_6.6 -> android15-6.6
 
 set -e
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-KERNEL_REPO="$REPO_ROOT/patch_workspace/android14-6.1/common"
 PATCH_DIR="$REPO_ROOT/patch"
 
-# Branch names (customize as needed)
-ORIGIN_BRANCH="android14-6.1"
+# Select kernel workspace and branches by current git branch
+CURRENT_BRANCH="$(git branch --show-current)"
+case "$CURRENT_BRANCH" in
+  android14_6.1)
+    KERNEL_REPO="$REPO_ROOT/patch_workspace/android14-6.1/common"
+    ORIGIN_BRANCH="android14-6.1"
+    ;;
+  android15_6.6|*)
+    KERNEL_REPO="$REPO_ROOT/patch_workspace/android15-6.6/common"
+    ORIGIN_BRANCH="android15-6.6"
+    ;;
+esac
 MODIFIED_BRANCH="hymofs-modified"
 
 # Check if kernel repo exists
 if [ ! -d "$KERNEL_REPO/.git" ]; then
-    echo "[pre-commit] Kernel repo not found, skipping patch generation"
+    echo "[pre-commit] Kernel repo not found at $KERNEL_REPO, skipping patch generation"
     exit 0
 fi
 
-echo "[pre-commit] Generating patch from kernel modifications..."
+echo "[pre-commit] Generating patch from kernel modifications ($ORIGIN_BRANCH)..."
 
 cd "$KERNEL_REPO"
 
@@ -37,10 +47,9 @@ fi
 PATCH_FILE="$PATCH_DIR/hymofs.patch"
 git diff "$ORIGIN_BRANCH".."$MODIFIED_BRANCH" > "$PATCH_FILE"
 
-
 # Check if patch changed
 cd "$REPO_ROOT"
-if git diff --quiet "$PATCH_FILE" 2>/dev/null; then
+if  git diff --quiet "$PATCH_FILE" 2>/dev/null; then
     echo "[pre-commit] Patch unchanged"
 else
     echo "[pre-commit] Patch updated, staging..."
