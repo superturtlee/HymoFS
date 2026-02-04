@@ -289,10 +289,10 @@ index 71bd99ce8..d5e7b93a2 100644
  
 diff --git a/fs/hymofs.c b/fs/hymofs.c
 new file mode 100644
-index 000000000..f180a4f7e
+index 000000000..1703c14bb
 --- /dev/null
 +++ b/fs/hymofs.c
-@@ -0,0 +1,2690 @@
+@@ -0,0 +1,2748 @@
 +#include <linux/string.h>
 +#include <linux/mm.h>
 +#include <linux/file.h>
@@ -442,7 +442,14 @@ index 000000000..f180a4f7e
 +static DEFINE_HASHTABLE(hymo_inject_dirs, HYMO_HASH_BITS);
 +static DEFINE_HASHTABLE(hymo_xattr_sbs, HYMO_HASH_BITS);
 +static DEFINE_HASHTABLE(hymo_merge_dirs, HYMO_HASH_BITS);
-+static DEFINE_SPINLOCK(hymo_lock);
++/* Fine-grained locks to reduce contention (backported from hymofs_kpm) */
++static DEFINE_SPINLOCK(hymo_cfg_lock);       /* enable/mirror path toggles */
++static DEFINE_SPINLOCK(hymo_rules_lock);     /* hymo_paths + hymo_targets */
++static DEFINE_SPINLOCK(hymo_hide_lock);      /* hymo_hide_paths */
++static DEFINE_SPINLOCK(hymo_allow_uids_lock); /* hymo_allow_uids */
++static DEFINE_SPINLOCK(hymo_xattr_sbs_lock); /* hymo_xattr_sbs */
++static DEFINE_SPINLOCK(hymo_merge_lock);      /* hymo_merge_dirs */
++static DEFINE_SPINLOCK(hymo_inject_lock);    /* hymo_inject_dirs */
 +static bool hymo_allowlist_loaded = false;
 +static DEFINE_MUTEX(hymo_allowlist_lock);
 +bool hymofs_enabled = false;
@@ -629,6 +636,7 @@ index 000000000..f180a4f7e
 +    if (!dir) return;
 +
 +    hash = full_name_hash(NULL, dir, strlen(dir));
++    spin_lock(&hymo_inject_lock);
 +    hlist_for_each_entry(inject_entry, &hymo_inject_dirs[hash_min(hash, HYMO_HASH_BITS)], node) {
 +        if (strcmp(inject_entry->dir, dir) == 0) {
 +            found = true;
@@ -648,6 +656,7 @@ index 000000000..f180a4f7e
 +    } else {
 +        kfree(dir);
 +    }
++    spin_unlock(&hymo_inject_lock);
 +}
 +
 +static void hymofs_reorder_mnt_id(void)
@@ -744,14 +753,26 @@ index 000000000..f180a4f7e
 +    int ret = 0;
 +
 +    if (cmd == HYMO_CMD_CLEAR_ALL) {
-+        spin_lock(&hymo_lock);
++        spin_lock(&hymo_cfg_lock);
++        spin_lock(&hymo_rules_lock);
++        spin_lock(&hymo_hide_lock);
++        spin_lock(&hymo_allow_uids_lock);
++        spin_lock(&hymo_xattr_sbs_lock);
++        spin_lock(&hymo_merge_lock);
++        spin_lock(&hymo_inject_lock);
 +        hymo_cleanup_locked();
 +        strscpy(hymo_mirror_path_buf, HYMO_DEFAULT_MIRROR_PATH, PATH_MAX);
 +        strscpy(hymo_mirror_name_buf, HYMO_DEFAULT_MIRROR_NAME, NAME_MAX);
 +        hymo_current_mirror_path = hymo_mirror_path_buf;
 +        hymo_current_mirror_name = hymo_mirror_name_buf;
 +        hymofs_enabled = false;
-+        spin_unlock(&hymo_lock);
++        spin_unlock(&hymo_inject_lock);
++        spin_unlock(&hymo_merge_lock);
++        spin_unlock(&hymo_xattr_sbs_lock);
++        spin_unlock(&hymo_allow_uids_lock);
++        spin_unlock(&hymo_hide_lock);
++        spin_unlock(&hymo_rules_lock);
++        spin_unlock(&hymo_cfg_lock);
 +        rcu_barrier();
 +        return 0;
 +    }
@@ -789,9 +810,9 @@ index 000000000..f180a4f7e
 +    if (cmd == HYMO_CMD_SET_ENABLED) {
 +        int val;
 +        if (copy_from_user(&val, arg, sizeof(val))) return -EFAULT;
-+        spin_lock(&hymo_lock);
++        spin_lock(&hymo_cfg_lock);
 +        hymofs_enabled = !!val;
-+        spin_unlock(&hymo_lock);
++        spin_unlock(&hymo_cfg_lock);
 +        hymo_log("HymoFS %s\n", hymofs_enabled ? "enabled" : "disabled");
 +#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
 +        if (hymofs_enabled) {
@@ -935,12 +956,12 @@ index 000000000..f180a4f7e
 +            return -ENOMEM;
 +        }
 +
-+        spin_lock(&hymo_lock);
++        spin_lock(&hymo_cfg_lock);
 +        strscpy(hymo_mirror_path_buf, new_path, PATH_MAX);
 +        strscpy(hymo_mirror_name_buf, new_name, NAME_MAX);
 +        hymo_current_mirror_path = hymo_mirror_path_buf;
 +        hymo_current_mirror_name = hymo_mirror_name_buf;
-+        spin_unlock(&hymo_lock);
++        spin_unlock(&hymo_cfg_lock);
 +
 +        kfree(new_path);
 +        kfree(new_name);
@@ -967,7 +988,8 @@ index 000000000..f180a4f7e
 +            hymo_log("add merge rule: src=%s, target=%s\n", src, target);
 +            
 +            hash = full_name_hash(NULL, src, strlen(src));
-+            spin_lock(&hymo_lock);
++            spin_lock(&hymo_merge_lock);
++            spin_lock(&hymo_inject_lock);
 +            
 +            hlist_for_each_entry(merge_entry, &hymo_merge_dirs[hash_min(hash, HYMO_HASH_BITS)], node) {
 +                if (strcmp(merge_entry->src, src) == 0 && strcmp(merge_entry->target, target) == 0) {
@@ -1004,15 +1026,19 @@ index 000000000..f180a4f7e
 +                    
 +                    src = NULL;
 +                    target = NULL;
-+                    hymofs_add_inject_rule(kstrdup(merge_entry->src, GFP_ATOMIC));
 +                } else {
 +                    ret = -ENOMEM;
 +                }
 +            } else {
 +                ret = -EEXIST;
 +            }
++            spin_unlock(&hymo_inject_lock);
++            spin_unlock(&hymo_merge_lock);
++            if (!found && merge_entry)
++                hymofs_add_inject_rule(kstrdup(merge_entry->src, GFP_ATOMIC));
++            spin_lock(&hymo_cfg_lock);
 +            hymofs_enabled = true;
-+            spin_unlock(&hymo_lock);
++            spin_unlock(&hymo_cfg_lock);
 +            break;
 +        }
 +
@@ -1102,7 +1128,7 @@ index 000000000..f180a4f7e
 +            }
 +
 +            hash = full_name_hash(NULL, src, strlen(src));
-+            spin_lock(&hymo_lock);
++            spin_lock(&hymo_rules_lock);
 +
 +            {
 +                hlist_for_each_entry(entry, &hymo_paths[hash_min(hash, HYMO_HASH_BITS)], node) {
@@ -1147,6 +1173,7 @@ index 000000000..f180a4f7e
 +                }
 +            }
 +
++            spin_unlock(&hymo_rules_lock);
 +            if (parent_dir) {
 +                hymofs_add_inject_rule(parent_dir);
 +            }
@@ -1163,8 +1190,9 @@ index 000000000..f180a4f7e
 +                iput(parent_inode);
 +            }
 +
++            spin_lock(&hymo_cfg_lock);
 +            hymofs_enabled = true;
-+            spin_unlock(&hymo_lock);
++            spin_unlock(&hymo_cfg_lock);
 +            break;
 +        }
 +
@@ -1221,7 +1249,7 @@ index 000000000..f180a4f7e
 +            }
 +
 +            hash = full_name_hash(NULL, src, strlen(src));
-+            spin_lock(&hymo_lock);
++            spin_lock(&hymo_hide_lock);
 +            hlist_for_each_entry(hide_entry, &hymo_hide_paths[hash_min(hash, HYMO_HASH_BITS)], node) {
 +                if (strcmp(hide_entry->path, src) == 0) {
 +                    found = true;
@@ -1238,8 +1266,10 @@ index 000000000..f180a4f7e
 +                        kfree(hide_entry);
 +                }
 +            }
++            spin_unlock(&hymo_hide_lock);
++            spin_lock(&hymo_cfg_lock);
 +            hymofs_enabled = true;
-+            spin_unlock(&hymo_lock);
++            spin_unlock(&hymo_cfg_lock);
 +            break;
 +        }
 +
@@ -1253,7 +1283,7 @@ index 000000000..f180a4f7e
 +            if (kern_path(src, LOOKUP_FOLLOW, &path) == 0) {
 +                struct super_block *sb = path.dentry->d_sb;
 +                
-+                spin_lock(&hymo_lock);
++                spin_lock(&hymo_xattr_sbs_lock);
 +                hlist_for_each_entry(sb_entry, &hymo_xattr_sbs[hash_min((unsigned long)sb, HYMO_HASH_BITS)], node) {
 +                    if (sb_entry->sb == sb) {
 +                        found = true;
@@ -1268,8 +1298,10 @@ index 000000000..f180a4f7e
 +                        hymo_log("hide xattrs for sb %p (path: %s)\n", sb, src);
 +                    }
 +                }
++                spin_unlock(&hymo_xattr_sbs_lock);
++                spin_lock(&hymo_cfg_lock);
 +                hymofs_enabled = true;
-+                spin_unlock(&hymo_lock);
++                spin_unlock(&hymo_cfg_lock);
 +                path_put(&path);
 +            } else {
 +                ret = -ENOENT;
@@ -1281,12 +1313,15 @@ index 000000000..f180a4f7e
 +            if (!src) { ret = -EINVAL; break; }
 +            hymo_log("del rule: src=%s\n", src);
 +            hash = full_name_hash(NULL, src, strlen(src));
-+            spin_lock(&hymo_lock);
++            spin_lock(&hymo_rules_lock);
++            spin_lock(&hymo_hide_lock);
++            spin_lock(&hymo_inject_lock);
 +            
 +            hlist_for_each_entry(entry, &hymo_paths[hash_min(hash, HYMO_HASH_BITS)], node) {
 +                if (strcmp(entry->src, src) == 0) {
 +                    hlist_del_rcu(&entry->node);
 +                    hlist_del_rcu(&entry->target_node);
++                    atomic_dec(&hymo_rule_count);
 +                    call_rcu(&entry->rcu, hymo_entry_free_rcu);
 +                    goto out_delete;
 +                }
@@ -1301,13 +1336,18 @@ index 000000000..f180a4f7e
 +            hlist_for_each_entry(inject_entry, &hymo_inject_dirs[hash_min(hash, HYMO_HASH_BITS)], node) {
 +                if (strcmp(inject_entry->dir, src) == 0) {
 +                    hlist_del_rcu(&inject_entry->node);
++                    atomic_dec(&hymo_rule_count);
 +                    call_rcu(&inject_entry->rcu, hymo_inject_entry_free_rcu);
 +                    goto out_delete;
 +                }
 +            }
 +    out_delete:
++            spin_unlock(&hymo_inject_lock);
++            spin_unlock(&hymo_hide_lock);
++            spin_unlock(&hymo_rules_lock);
++            spin_lock(&hymo_cfg_lock);
 +            hymofs_enabled = true;
-+            spin_unlock(&hymo_lock);
++            spin_unlock(&hymo_cfg_lock);
 +            break;
 +
 +        case HYMO_CMD_REORDER_MNT_ID:
@@ -1339,9 +1379,9 @@ index 000000000..f180a4f7e
 +        int enabled;
 +        if (copy_from_user(&enabled, (void __user *)arg, sizeof(enabled)))
 +            return -EFAULT;
-+        spin_lock(&hymo_lock);
++        spin_lock(&hymo_cfg_lock);
 +        hymofs_enabled = enabled ? true : false;
-+        spin_unlock(&hymo_lock);
++        spin_unlock(&hymo_cfg_lock);
 +#ifdef CONFIG_HYMOFS_HIDE_ENTRIES
 +        if (hymofs_enabled) {
 +            hymo_reload_ksu_allowlist();
@@ -1383,7 +1423,6 @@ index 000000000..f180a4f7e
 +
 +static int __init hymofs_init(void)
 +{
-+    spin_lock_init(&hymo_lock);
 +    hash_init(hymo_paths);
 +    hash_init(hymo_targets);
 +    hash_init(hymo_hide_paths);
@@ -1429,11 +1468,18 @@ index 000000000..f180a4f7e
 +    hash = full_name_hash(NULL, pathname, path_len);
 +
 +    rcu_read_lock();
-+    hlist_for_each_entry_rcu(entry, &hymo_paths[hash_min(hash, HYMO_HASH_BITS)], node) {
-+        if (unlikely(strcmp(entry->src, pathname) == 0)) {
-+            target = kstrdup(entry->target, GFP_ATOMIC);
-+            rcu_read_unlock();
-+            return target;
++    /* Bloom filter fast-path: skip expensive path lookup when path is definitely not in rules (KPM backport) */
++    if (atomic_read(&hymo_rule_count) != 0) {
++        unsigned long bh1 = jhash(pathname, (u32)path_len, 0) & (HYMO_BLOOM_SIZE - 1);
++        unsigned long bh2 = jhash(pathname, (u32)path_len, 1) & (HYMO_BLOOM_SIZE - 1);
++        if (test_bit(bh1, hymo_path_bloom) && test_bit(bh2, hymo_path_bloom)) {
++            hlist_for_each_entry_rcu(entry, &hymo_paths[hash_min(hash, HYMO_HASH_BITS)], node) {
++                if (unlikely(strcmp(entry->src, pathname) == 0)) {
++                    target = kstrdup(entry->target, GFP_ATOMIC);
++                    rcu_read_unlock();
++                    return target;
++                }
++            }
 +        }
 +    }
 +    
@@ -1598,10 +1644,10 @@ index 000000000..f180a4f7e
 +        return;
 +    entry->uid = uid;
 +
-+    spin_lock(&hymo_lock);
++    spin_lock(&hymo_allow_uids_lock);
 +    hlist_add_head_rcu(&entry->node,
 +                       &hymo_allow_uids[hash_min(hash, HYMO_HASH_BITS)]);
-+    spin_unlock(&hymo_lock);
++    spin_unlock(&hymo_allow_uids_lock);
 +}
 +
 +static bool hymo_reload_ksu_allowlist(void)
@@ -1619,10 +1665,10 @@ index 000000000..f180a4f7e
 +
 +    fp = filp_open(HYMO_KSU_ALLOWLIST_PATH, O_RDONLY, 0);
 +    if (IS_ERR(fp)) {
-+        spin_lock(&hymo_lock);
++        spin_lock(&hymo_allow_uids_lock);
 +        hymo_clear_allowlist_locked();
 +        hymo_allowlist_loaded = false;
-+        spin_unlock(&hymo_lock);
++        spin_unlock(&hymo_allow_uids_lock);
 +        mutex_unlock(&hymo_allowlist_lock);
 +        return false;
 +    }
@@ -1637,10 +1683,10 @@ index 000000000..f180a4f7e
 +    if (version != HYMO_KSU_ALLOWLIST_VERSION)
 +        hymo_log("allowlist version %u\n", version);
 +
-+    spin_lock(&hymo_lock);
++    spin_lock(&hymo_allow_uids_lock);
 +    hymo_clear_allowlist_locked();
 +    hymo_allowlist_loaded = true;
-+    spin_unlock(&hymo_lock);
++    spin_unlock(&hymo_allow_uids_lock);
 +
 +    while (kernel_read(fp, &profile, sizeof(profile), &off) == sizeof(profile)) {
 +        if (!hymo_should_umount_profile(&profile)) {
@@ -1660,10 +1706,10 @@ index 000000000..f180a4f7e
 +
 +out_bad:
 +    filp_close(fp, NULL);
-+    spin_lock(&hymo_lock);
++    spin_lock(&hymo_allow_uids_lock);
 +    hymo_clear_allowlist_locked();
 +    hymo_allowlist_loaded = false;
-+    spin_unlock(&hymo_lock);
++    spin_unlock(&hymo_allow_uids_lock);
 +    mutex_unlock(&hymo_allowlist_lock);
 +    return false;
 +}
@@ -1772,6 +1818,7 @@ index 000000000..f180a4f7e
 +{
 +    struct hymo_entry *entry;
 +    u32 hash;
++    size_t path_len;
 +    bool found = false;
 +    pid_t current_pid;
 +
@@ -1784,8 +1831,19 @@ index 000000000..f180a4f7e
 +        return false;
 +    }
 +
-+    hash = full_name_hash(NULL, pathname, strlen(pathname));
++    if (atomic_read(&hymo_rule_count) == 0)
++        return false;
 +
++    path_len = strlen(pathname);
++    /* Bloom fast-path: skip lookup when path is definitely not in rules (KPM backport) */
++    {
++        unsigned long bh1 = jhash(pathname, (u32)path_len, 0) & (HYMO_BLOOM_SIZE - 1);
++        unsigned long bh2 = jhash(pathname, (u32)path_len, 1) & (HYMO_BLOOM_SIZE - 1);
++        if (!test_bit(bh1, hymo_path_bloom) || !test_bit(bh2, hymo_path_bloom))
++            return false;
++    }
++
++    hash = full_name_hash(NULL, pathname, path_len);
 +    rcu_read_lock();
 +    hlist_for_each_entry_rcu(entry, &hymo_paths[hash_min(hash, HYMO_HASH_BITS)], node) {
 +        if (unlikely(strcmp(entry->src, pathname) == 0)) {
@@ -3759,10 +3817,10 @@ index c49df4a39..60466875f 100644
  
 diff --git a/include/linux/hymo_magic.h b/include/linux/hymo_magic.h
 new file mode 100644
-index 000000000..7388c56c2
+index 000000000..12fb6302c
 --- /dev/null
 +++ b/include/linux/hymo_magic.h
-@@ -0,0 +1,127 @@
+@@ -0,0 +1,134 @@
 +#ifndef _LINUX_HYMO_MAGIC_H
 +#define _LINUX_HYMO_MAGIC_H
 +
@@ -3811,6 +3869,12 @@ index 000000000..7388c56c2
 +struct hymo_syscall_list_arg {
 +    char *buf;  // Keep as char* for output buffer
 +    size_t size;
++};
++
++struct hymo_uid_list_arg {
++    __u32 count;
++    __u32 reserved;
++    __aligned_u64 uids;
 +};
 +
 +/* 
@@ -3888,6 +3952,7 @@ index 000000000..7388c56c2
 +#define HYMO_IOC_SET_CMDLINE        _IOW(HYMO_IOC_MAGIC, 18, struct hymo_spoof_cmdline)
 +#define HYMO_IOC_GET_FEATURES       _IOR(HYMO_IOC_MAGIC, 19, int)
 +#define HYMO_IOC_SET_ENABLED        _IOW(HYMO_IOC_MAGIC, 20, int)
++#define HYMO_IOC_SET_HIDE_UIDS      _IOW(HYMO_IOC_MAGIC, 21, struct hymo_uid_list_arg)
 +
 +#endif /* _LINUX_HYMO_MAGIC_H */
 \ No newline at end of file
