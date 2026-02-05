@@ -58,3 +58,4 @@ local.properties
 .idea/
 manager_app/
 .DS_Store
+patch_workspace/
