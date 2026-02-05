@@ -100,27 +100,28 @@ done
 
 # 若在 dry-run 下只做了“将要写入”的模拟，不实际改工作区
 if [ "$DRY_RUN" = true ]; then
+  log "[dry-run] Would commit in each patch_workspace repo, then empty commit on each HymoFS branch."
   log "[dry-run] Done. No commits or pushes."
   exit 0
 fi
 
-# 3) 在 dev 上提交
-if git status -s | grep -q .; then
-  git add "${sync_targets[@]}"
-  git commit -m "sync: single source ${SINGLE_SOURCE} to all patch_workspace hymofs.c"
-  log "Committed on ${DEV_BRANCH}."
-else
-  log "No changes after sync on ${DEV_BRANCH}."
-fi
+# 3) 在 patch_workspace 里每个源码仓库中提交同步后的文件
+for target in "${sync_targets[@]}"; do
+  repo_dir="${target%/$TARGET_REL}"
+  if [ ! -d "$repo_dir/.git" ]; then
+    log "Skip (not a git repo): $repo_dir"
+    continue
+  fi
+  log "Commit in repo: $repo_dir"
+  ( cd "$repo_dir" && \
+    git add -f "$TARGET_REL" 2>/dev/null || true && \
+    if ! git diff --cached --quiet 2>/dev/null; then
+      git commit -m "sync: hymofs.c from HymoFS single source"
+    fi
+  ) || true
+done
 
-# 4) 推送 dev
-if [ "$NO_PUSH" = false ]; then
-  git push origin "${DEV_BRANCH}"
-  log "Pushed ${DEV_BRANCH}."
-fi
-
-# 5) 所有需要同步的分支（除 dev 外）：checkout -> merge dev -> push
-# 分支名与 patch_workspace 目录对应：android14-6.1 -> android14_6.1
+# 4) 收集 HymoFS 各分支名（与 patch_workspace 目录对应：android14-6.1 -> android14_6.1）
 all_branches=()
 for d in "$PATCH_WS"/android*-*; do
   [ -d "$d" ] || continue
@@ -133,41 +134,41 @@ for d in "$PATCH_WS"/android*-*; do
     all_branches+=( "$branch_name" )
   fi
 done
-
-# 若未从目录推断到任何分支，则使用默认列表
 if [ ${#all_branches[@]} -eq 0 ]; then
   default_branches=( android12_5.10 android13_5.10 android13_5.15 android14_5.15 android14_6.1 android15_6.6 android16_6.12 )
   for b in "${default_branches[@]}"; do
-    if git rev-parse --verify "origin/$b" &>/dev/null 2>/dev/null || git rev-parse --verify "$b" &>/dev/null; then
+    if git rev-parse --verify "origin/$b" &>/dev/null || git rev-parse --verify "$b" &>/dev/null; then
       all_branches+=( "$b" )
     fi
   done
 fi
 
+# 5) 回到 HymoFS：对每个分支做空提交（触发 githook），再推送
 for branch in "${all_branches[@]}"; do
-  if [ "$branch" = "$DEV_BRANCH" ]; then
-    continue
-  fi
-  log "Branch: $branch (merge ${DEV_BRANCH}, then push)"
+  [ "$branch" = "$DEV_BRANCH" ] && continue
+  log "Branch: $branch (empty commit, then push)"
   git fetch origin "$branch" 2>/dev/null || true
   git checkout "$branch" 2>/dev/null || { log "Skip (no branch): $branch"; continue; }
   git pull --rebase origin "$branch" 2>/dev/null || true
-  if git merge "$DEV_BRANCH" -m "merge: sync single source from ${DEV_BRANCH}"; then
-    if [ "$NO_PUSH" = false ]; then
-      git push origin "$branch"
-      log "Pushed $branch."
-    fi
-  else
-    err "Merge ${DEV_BRANCH} into $branch failed. Resolve and push manually."
-    exit 1
+  git commit --allow-empty -m "sync: single source ${SINGLE_SOURCE} to patch_workspace (githook)"
+  if [ "$NO_PUSH" = false ]; then
+    git push origin "$branch"
+    log "Pushed $branch."
   fi
 done
 
-# 回到 dev
+# dev 也做一次空提交并推送
+log "Branch: ${DEV_BRANCH} (empty commit, then push)"
 git checkout "${DEV_BRANCH}"
+git pull --rebase origin "${DEV_BRANCH}" 2>/dev/null || true
+git commit --allow-empty -m "sync: single source ${SINGLE_SOURCE} to patch_workspace (githook)"
+if [ "$NO_PUSH" = false ]; then
+  git push origin "${DEV_BRANCH}"
+  log "Pushed ${DEV_BRANCH}."
+fi
 
 if [ "$NO_PUSH" = false ]; then
-  log "All branches synced and pushed."
+  log "All branches: empty commit and pushed."
 else
-  log "Sync and commits done. Push skipped (--no-push)."
+  log "Sync and empty commits done. Push skipped (--no-push)."
 fi
