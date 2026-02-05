@@ -92,16 +92,6 @@ jobs:
           sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' kernel_platform/external/dtc/scripts/setlocalversion || true
 
           echo "✅ 内核配置完成"
-
-      - name: "⚙️ Apply ADIOS Patch | 应用 ADIOS 补丁"
-        if: ${{ env.APPLY_ADIOS == 'On' }}
-        run: |
-          cd kernel_workspace/kernel_platform/common
-          wget https://raw.githubusercontent.com/firelzrd/adios/refs/heads/main/patches/testing/0001-linux6.12.44-ADIOS-3.1.8.patch
-          
-          patch -p1 -F 3 < 0001-linux6.12.44-ADIOS-3.1.8.patch
-
-          echo "  [*] ADIOS 代码注入完成！"
       
       - name: "⚙️ Apply HymoFS Patch | 应用 HymoFS 补丁"
         if: ${{ env.APPLY_HYMOFS == 'On' }}
