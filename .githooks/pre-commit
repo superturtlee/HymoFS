@@ -5,7 +5,7 @@
 set -e
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-KERNEL_REPO="$REPO_ROOT/patch_workspace/android15-6.6/common"
+KERNEL_REPO="$REPO_ROOT/patch_workspace/dev/common"
 PATCH_DIR="$REPO_ROOT/patch"
 
 # Branch names (customize as needed)
