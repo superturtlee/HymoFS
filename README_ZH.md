@@ -81,15 +81,15 @@ curl -LSs https://raw.githubusercontent.com/Anatdx/HymoFS/main/setup.sh | bash -
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `CONFIG_HYMOFS` | n | 总开关。 |
+| `CONFIG_HYMOFS` | y | 总开关。 |
 | `CONFIG_HYMOFS_REVERSE_LOOKUP` | y | 路径反向解析（d_path → 虚拟路径）。 |
 | `CONFIG_HYMOFS_FORWARD_REDIRECT` | y | 路径正向重定向（namei / getname）。 |
 | `CONFIG_HYMOFS_HIDE_ENTRIES` | y | readdir 中隐藏条目。 |
-| `CONFIG_HYMOFS_INJECT_ENTRIES` | n | readdir 中注入虚拟条目（实验性）。 |
-| `CONFIG_HYMOFS_STAT_SPOOF` | n | stat/kstat 伪装。 |
+| `CONFIG_HYMOFS_INJECT_ENTRIES` | y | readdir 中注入虚拟条目（实验性）。 |
+| `CONFIG_HYMOFS_STAT_SPOOF` | y | stat/kstat 伪装。 |
 | `CONFIG_HYMOFS_XATTR_FILTER` | y | 扩展属性过滤/伪装。 |
-| `CONFIG_HYMOFS_UNAME_SPOOF` | n | uname 伪装。 |
-| `CONFIG_HYMOFS_CMDLINE_SPOOF` | n | /proc/cmdline、bootconfig 伪装。 |
+| `CONFIG_HYMOFS_UNAME_SPOOF` | y | uname 伪装。 |
+| `CONFIG_HYMOFS_CMDLINE_SPOOF` | y | /proc/cmdline、bootconfig 伪装。 |
 | `CONFIG_HYMOFS_DEBUG` | n | 详细内核日志（生产环境应关闭）。 |
 
 脚本会在 defconfig 末尾追加一组合适选项；可在 defconfig 中按需关闭子功能。
