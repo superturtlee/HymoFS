@@ -53,10 +53,10 @@
 #ifdef CONFIG_HYMOFS
 
 /*
- * dir_context.actor return type: 5.10 uses int (0=continue), 5.15+ uses bool (true=continue).
+ * dir_context.actor return type: 5.10/5.15 use int (0=continue), 6.1+ use bool (true=continue).
  * Single source for all branches (5.10 / 5.15 / 6.1 / 6.6 / 6.12).
  */
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0))
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0))
 #define HYMO_FILLDIR_RET_TYPE int
 #define HYMO_FILLDIR_CONTINUE 0
 #define HYMO_FILLDIR_STOP 1
@@ -824,7 +824,8 @@ int hymo_dispatch_cmd(unsigned int cmd, void __user *arg) {
     if (cmd == HYMO_CMD_SET_MIRROR_PATH) {
         char *new_path = NULL;
         char *new_name = NULL;
-        
+        size_t len;
+
         if (req.src) {
             new_path = strndup_user(req.src, PATH_MAX);
             if (IS_ERR(new_path)) return PTR_ERR(new_path);
@@ -835,7 +836,7 @@ int hymo_dispatch_cmd(unsigned int cmd, void __user *arg) {
         hymo_log("setting mirror path to: %s\n", new_path);
 
         /* Strip trailing slash if present */
-        size_t len = strlen(new_path);
+        len = strlen(new_path);
         if (len > 1 && new_path[len - 1] == '/') {
             new_path[len - 1] = '\0';
         }
@@ -2233,6 +2234,7 @@ bool __hymofs_check_filldir(struct hymo_readdir_context *ctx, const char *name, 
     struct dentry *child;
     struct inode *inode;
     pid_t current_pid;
+    struct hymo_merge_target_node *node;
 
     /* Root sees everything */
     if (uid_eq(current_uid(), GLOBAL_ROOT_UID))
@@ -2294,7 +2296,6 @@ bool __hymofs_check_filldir(struct hymo_readdir_context *ctx, const char *name, 
         }
         
         /* Bloom filter positive - need to confirm with d_hash_and_lookup */
-        struct hymo_merge_target_node *node;
         list_for_each_entry(node, &ctx->merge_targets, list) {
             /* Fast path: use cached dentry + d_hash_and_lookup */
             if (node->target_dentry) {
@@ -2574,9 +2575,9 @@ void hymofs_spoof_stat(const struct path *path, struct kstat *stat)
             /* Always look up parent to get correct fs attributes (dev, uid, gid) */
                 char *last_slash = strrchr(p, '/');
                 if (last_slash) {
+                    struct path parent_path;
                     if (last_slash == p) {
                         /* Parent is root */
-                        struct path parent_path;
                         if (kern_path("/", LOOKUP_FOLLOW, &parent_path) == 0) {
                             struct inode *inode = d_backing_inode(parent_path.dentry);
                             stat->uid = inode->i_uid;
@@ -2586,7 +2587,6 @@ void hymofs_spoof_stat(const struct path *path, struct kstat *stat)
                         }
                     } else {
                         *last_slash = '\0';
-                        struct path parent_path;
                         if (kern_path(p, LOOKUP_FOLLOW, &parent_path) == 0) {
                             struct inode *inode = d_backing_inode(parent_path.dentry);
                             stat->uid = inode->i_uid;
