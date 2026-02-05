@@ -105,18 +105,20 @@ if [ "$DRY_RUN" = true ]; then
   exit 0
 fi
 
-# 3) 在 patch_workspace 里每个源码仓库中提交同步后的文件
+# 3) 在 patch_workspace 里每个「子仓库的子仓库」即 common/ 中提交
+# 结构: patch_workspace/androidXX-X.X/common/.git 为源码仓库，同步文件为 common/fs/hymofs.c -> 在 common 里 add fs/hymofs.c
 for target in "${sync_targets[@]}"; do
-  repo_dir="${target%/$TARGET_REL}"
-  if [ ! -d "$repo_dir/.git" ]; then
-    log "Skip (not a git repo): $repo_dir"
+  # target = patch_workspace/android14-6.1/common/fs/hymofs.c -> 源码仓库根 = .../common
+  common_repo_dir="${target%/fs/hymofs.c}"
+  if [ ! -d "$common_repo_dir/.git" ]; then
+    log "Skip (not a git repo): $common_repo_dir"
     continue
   fi
-  log "Commit in repo: $repo_dir"
-  ( cd "$repo_dir" && \
-    git add -f "$TARGET_REL" 2>/dev/null || true && \
+  log "Commit in repo (common): $common_repo_dir"
+  ( cd "$common_repo_dir" && \
+    git add . && \
     if ! git diff --cached --quiet 2>/dev/null; then
-      git commit -m "sync: hymofs.c from HymoFS single source"
+      git commit -m "sync: from HymoFS single source"
     fi
   ) || true
 done
@@ -144,11 +146,22 @@ if [ ${#all_branches[@]} -eq 0 ]; then
 fi
 
 # 5) 回到 HymoFS：对每个分支做空提交（触发 githook），再推送
+# 若有未提交修改则先 stash，否则 checkout 会拒绝切换
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  log "Stashing local changes for branch switching..."
+  git stash push -m "sync-push: temp before branch loop"
+  STASHED=1
+else
+  STASHED=0
+fi
+# 若本地无该分支则用 origin/ 创建
 for branch in "${all_branches[@]}"; do
   [ "$branch" = "$DEV_BRANCH" ] && continue
   log "Branch: $branch (empty commit, then push)"
   git fetch origin "$branch" 2>/dev/null || true
-  git checkout "$branch" 2>/dev/null || { log "Skip (no branch): $branch"; continue; }
+  if ! git checkout "$branch" 2>/dev/null; then
+    git checkout -b "$branch" "origin/$branch" 2>/dev/null || { log "Skip (no branch): $branch"; continue; }
+  fi
   git pull --rebase origin "$branch" 2>/dev/null || true
   git commit --allow-empty -m "sync: single source ${SINGLE_SOURCE} to patch_workspace (githook)"
   if [ "$NO_PUSH" = false ]; then
@@ -165,6 +178,10 @@ git commit --allow-empty -m "sync: single source ${SINGLE_SOURCE} to patch_works
 if [ "$NO_PUSH" = false ]; then
   git push origin "${DEV_BRANCH}"
   log "Pushed ${DEV_BRANCH}."
+fi
+
+if [ "$STASHED" = 1 ]; then
+  log "Local changes were stashed. Restore with: git stash pop"
 fi
 
 if [ "$NO_PUSH" = false ]; then
