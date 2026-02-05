@@ -81,15 +81,15 @@ All under `CONFIG_HYMOFS`:
 
 | Option | Default | Description |
 |--------|----------|-------------|
-| `CONFIG_HYMOFS` | n | Master switch for HymoFS. |
+| `CONFIG_HYMOFS` | y | Master switch for HymoFS. |
 | `CONFIG_HYMOFS_REVERSE_LOOKUP` | y | Reverse path lookup (d_path → virtual path). |
 | `CONFIG_HYMOFS_FORWARD_REDIRECT` | y | Forward path redirection (namei / getname). |
 | `CONFIG_HYMOFS_HIDE_ENTRIES` | y | Hide entries in readdir. |
-| `CONFIG_HYMOFS_INJECT_ENTRIES` | n | Inject virtual entries in readdir (experimental). |
-| `CONFIG_HYMOFS_STAT_SPOOF` | n | Spoof stat/kstat. |
+| `CONFIG_HYMOFS_INJECT_ENTRIES` | y | Inject virtual entries in readdir (experimental). |
+| `CONFIG_HYMOFS_STAT_SPOOF` | y | Spoof stat/kstat. |
 | `CONFIG_HYMOFS_XATTR_FILTER` | y | Filter/spoof xattrs. |
-| `CONFIG_HYMOFS_UNAME_SPOOF` | n | Spoof uname. |
-| `CONFIG_HYMOFS_CMDLINE_SPOOF` | n | Spoof /proc/cmdline and bootconfig. |
+| `CONFIG_HYMOFS_UNAME_SPOOF` | y | Spoof uname. |
+| `CONFIG_HYMOFS_CMDLINE_SPOOF` | y | Spoof /proc/cmdline and bootconfig. |
 | `CONFIG_HYMOFS_DEBUG` | n | Verbose kernel logging (disable in production). |
 
 Setup script appends a typical set (including debug) to your defconfig; you can edit the defconfig to turn sub-features off.
