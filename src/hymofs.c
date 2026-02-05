@@ -824,6 +824,7 @@ int hymo_dispatch_cmd(unsigned int cmd, void __user *arg) {
     if (cmd == HYMO_CMD_SET_MIRROR_PATH) {
         char *new_path = NULL;
         char *new_name = NULL;
+        char *slash;
         size_t len;
 
         if (req.src) {
@@ -841,7 +842,7 @@ int hymo_dispatch_cmd(unsigned int cmd, void __user *arg) {
             new_path[len - 1] = '\0';
         }
 
-        char *slash = strrchr(new_path, '/');
+        slash = strrchr(new_path, '/');
         if (slash) {
             new_name = kstrdup(slash + 1, GFP_KERNEL);
         } else {
