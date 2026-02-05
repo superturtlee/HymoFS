@@ -1,14 +1,11 @@
 diff --git a/fs/Kconfig b/fs/Kconfig
-index 7172c0f3b..e96b4f97f 100644
+index 7172c0f3b..37f012e8b 100644
 --- a/fs/Kconfig
 +++ b/fs/Kconfig
-@@ -433,3 +433,137 @@ config IO_WQ
+@@ -432,4 +432,134 @@ source "fs/unicode/Kconfig"
+ config IO_WQ
  	bool
  
- endmenu
-+
-+menu "HymoFS"
-+
 +config HYMOFS
 +	bool "HymoFS Support"
 +	default n
@@ -139,8 +136,7 @@ index 7172c0f3b..e96b4f97f 100644
 +	  MUST be disabled in production builds.
 +	  If unsure, say N.
 +
-+endmenu
-\ No newline at end of file
+ endmenu
 diff --git a/fs/Makefile b/fs/Makefile
 index 9f5d06f4a..c49b68261 100644
 --- a/fs/Makefile
