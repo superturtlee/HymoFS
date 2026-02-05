@@ -1,0 +1,375 @@
+name: Build HymoFS
+
+env:
+  CPU: mt6991
+  FEIL: oneplus_ace5_ultra_b
+  ANDROID_VERSION: android15
+  KERNEL_VERSION: 6.6
+  APPLY_HYMOFS: On
+
+on:
+  push:
+    branches:
+      - android15_6.6
+         
+jobs:
+  build:
+    name: Build Kernel Only - HymoFS Test
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_MAXSIZE: 8G
+      
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ====================== 系统初始化阶段 ======================
+      - name: "🚀 Maximize Build Space | 最大化构建空间"
+        if: ${{ env.KERNEL_VERSION == '5.10' || env.KERNEL_VERSION == '5.15' }}
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 4096
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: "⚙️ Setup Cache Env | 设置缓存环境"
+        run: |
+          echo "🔧 正在设置机型隔离缓存目录..."
+          echo "CCACHE_DIR=$HOME/.ccache_${{ env.FEIL }}_SukiSU" >> $GITHUB_ENV
+          mkdir -p "$HOME/.ccache_${{ env.FEIL }}_SukiSU"
+          echo "✅ 缓存目录已设置: $HOME/.ccache_${{ env.FEIL }}_SukiSU"
+
+      - name: "🔐 Configure Git | 配置Git账户"
+        run: |
+          echo "🔧 正在配置Git用户信息..."
+          git config --global user.name "Anatdx"
+          git config --global user.email "an@anatdx.com"
+          echo "✅ Git配置完成"
+
+      # ====================== 依赖管理阶段 ======================
+      - name: "📦 Cache & Install Dependencies | 缓存 & 安装构建依赖"
+        uses: awalsh128/cache-apt-pkgs-action@latest 
+        with: 
+          packages: python3 git curl ccache libelf-dev build-essential flex bison libssl-dev libncurses-dev liblz4-tool zlib1g-dev libxml2-utils rsync unzip gawk dos2unix
+          execute_install_scripts: true
+
+      # ====================== 缓存管理阶段 ======================
+      - name: "💾 Restore ccache | 恢复ccache缓存"
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ github.ref }}-${{ env.FEIL }}-SukiSU
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ env.FEIL }}-SukiSU
+            ccache-${{ runner.os }}-SukiSU
+
+      - name: "⚙️ Initialize ccache | 初始化ccache"
+        run: |
+          echo "🔧 正在初始化ccache..."
+          INIT_FLAG="${{ env.CCACHE_DIR }}/.ccache_initialized"
+          
+          if command -v ccache >/dev/null 2>&1; then
+            if [ ! -f "$INIT_FLAG" ]; then
+              mkdir -p "${{ env.CCACHE_DIR }}"
+              ccache -M ${{ env.CCACHE_MAXSIZE }}
+              touch "$INIT_FLAG"
+              echo "✅ ccache初始化完成"
+            else
+              echo "ℹ️ ccache已存在，跳过初始化"
+            fi
+          else
+            echo "⚠️ 未找到ccache命令，跳过初始化"
+          fi
+          # 显示缓存统计
+          ccache -s
+          echo "✅ ccache初始化流程完成"
+
+      # ====================== 源码准备阶段 ======================
+      - name: "📥 Install Repo Tool | 安装Repo工具"
+        run: |
+          echo "⬇️ 正在下载repo工具..."
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
+          chmod a+x ~/repo
+          sudo mv ~/repo /usr/local/bin/repo
+          echo "✅ repo工具安装完成"
+
+      - name: "⬇️ Clone Kernel Source | 克隆内核源码"
+        run: |
+          mkdir kernel_workspace && cd kernel_workspace
+
+          echo "🌐 正在初始化内核仓库..."
+          repo init -u https://github.com/Xiaomichael/kernel_manifest.git -b refs/heads/oneplus/${{ env.CPU }} -m ${{ env.FEIL }}.xml --depth=1
+
+          echo "🔄 同步代码库(使用$(nproc --all)线程)..."
+          repo sync -c -j$(nproc --all) --no-tags --no-clone-bundle --force-sync
+ 
+          echo "✅ 内核源码克隆完成"
+     
+          rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
+          rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
+
+          echo "🔧 正在配置内核版本信息..."
+          # Remove -dirty in kernel version
+          sed -i 's/ -dirty//g' kernel_platform/common/scripts/setlocalversion
+          sed -i 's/ -dirty//g' kernel_platform/msm-kernel/scripts/setlocalversion
+          sed -i 's/ -dirty//g' kernel_platform/external/dtc/scripts/setlocalversion
+          sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' kernel_platform/common/scripts/setlocalversion
+          sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' kernel_platform/msm-kernel/scripts/setlocalversion
+          sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' kernel_platform/external/dtc/scripts/setlocalversion
+          
+          if [ "${{ env.KERNEL_VERSION }}" != "6.6" ]; then
+            sed -i '$s|echo "\$res"|echo "-${{ env.ANDROID_VERSION }}-oki-xiaoxiaow"|' kernel_platform/common/scripts/setlocalversion            
+            sed -i '$s|echo "\$res"|echo "-${{ env.ANDROID_VERSION }}-oki-xiaoxiaow"|' kernel_platform/msm-kernel/scripts/setlocalversion
+            sed -i '$s|echo "\$res"|echo "-${{ env.ANDROID_VERSION }}-oki-xiaoxiaow"|' kernel_platform/external/dtc/scripts/setlocalversion
+          else
+            ESCAPED_SUFFIX=$(printf '%s\n' "-${{ env.ANDROID_VERSION }}-oki-xiaoxiaow" | sed 's:[\/&]:\\&:g')
+            sudo sed -i "s/-4k/$ESCAPED_SUFFIX/g" kernel_platform/common/arch/arm64/configs/gki_defconfig
+            sed -i 's/${scm_version}//' kernel_platform/common/scripts/setlocalversion
+            sed -i 's/${scm_version}//' kernel_platform/msm-kernel/scripts/setlocalversion
+          fi
+
+          echo "✅ 内核配置完成"
+
+      # ====================== 内核定制阶段 ======================
+
+      - name: "⚙️ Apply HymoFS Patch | 应用 HymoFS 补丁"
+        if: ${{ env.APPLY_HYMOFS == 'On' }}
+        run: |
+          cd kernel_workspace/kernel_platform/
+
+          curl -LSs https://raw.githubusercontent.com/Anatdx/HymoFS/main/setup.sh | bash -s defconfig ./common/arch/arm64/configs/gki_defconfig
+
+          echo "  [*] HymoFS 代码注入完成！"
+
+      - name: "⚙️ Apply SCHED Patch | 应用风驰补丁"
+        if: ${{ env.KERNEL_VERSION == '6.6' }}
+        run: |
+          cd kernel_workspace/kernel_platform/common
+
+          echo "⬇️ 正在拉取风驰补丁"
+          if [ "${{ env.FEIL }}" == "oneplus_ace5_ultra_b" ]; then
+              echo "⚠️ Ace5 Ultra 需要使用 mt6991 分支的补丁"
+              git clone https://github.com/Numbersf/SCHED_PATCH.git -b "mt6991"
+          else
+              echo "⚙️ 使用 sm8750 分支的补丁"
+              git clone https://github.com/Numbersf/SCHED_PATCH.git -b "sm8750"
+          fi
+
+          cp ./SCHED_PATCH/fengchi_${{ env.FEIL }}.patch ./
+
+          if [[ -f "fengchi_${{ env.FEIL }}.patch" ]]; then
+            echo "⚙️ 开始应用风驰补丁"
+            dos2unix "fengchi_${{ env.FEIL }}.patch"
+            patch -p1 -F 3 < "fengchi_${{ env.FEIL }}.patch"
+            echo "✅ 完美风驰补丁应用完成"
+          else
+            sed -i '1iobj-y += hmbird_patch.o' drivers/Makefile
+            wget https://github.com/Numbersf/Action-Build/raw/SukiSU-Ultra/patches/hmbird_patch.patch
+            echo "⚙️ 正在打OGKI转换GKI补丁"
+            patch -p1 -F 3 < hmbird_patch.patch
+            echo "✅ OGKI转换GKI_patch完成"
+          fi
+          
+      - name: "⚙️ Configure Kernel Options | 配置内核选项"
+        run: |
+          cd kernel_workspace/kernel_platform
+
+          echo "⚙️ 正在配置内核编译选项..."
+
+          if [ "${{ env.APPLY_HYMOFS }}" = "On" ]; then
+            echo "CONFIG_HYMOFS=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_HYMOFS_REVERSE_LOOKUP=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_HYMOFS_FORWARD_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_HYMOFS_HIDE_ENTRIES=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_HYMOFS_INJECT_ENTRIES=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_HYMOFS_STAT_SPOOF=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_HYMOFS_XATTR_FILTER=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_HYMOFS_UNAME_SPOOF=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_HYMOFS_CMDLINE_SPOOF=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_HYMOFS_DEBUG=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
+          
+          echo "📦 添加对 Mountify (backslashxx/mountify) 模块的支持"
+          echo "CONFIG_TMPFS_XATTR=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> ./common/arch/arm64/configs/gki_defconfig
+
+          
+          if [ "${{ env.lz4kd }}" == "On" ]; then
+            echo "📦 启用 lz4kd压缩..."
+            echo "CONFIG_CRYPTO_LZ4KD=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_CRYPTO_LZ4K_OPLUS=y" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "CONFIG_ZRAM_WRITEBACK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
+          
+          if [ "${{ env.KERNEL_VERSION }}" == "6.1" ] || [ "${{ env.KERNEL_VERSION }}" == "6.6" ]; then
+            # Add O2 config
+            echo "📦 为6.1 / 6.6加入O2优化..."
+            echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> ./common/arch/arm64/configs/gki_defconfig
+          fi
+          
+          if [ "${{ env.KERNEL_VERSION }}" = "5.10" ] || [ "${{ env.KERNEL_VERSION }}" = "5.15" ]; then
+            echo "📦 正在为5.10 / 5.15系配置lto中..."
+            DEFCONFIG=./common/arch/arm64/configs/gki_defconfig
+            sed -i 's/^CONFIG_LTO=n/CONFIG_LTO=y/' "$DEFCONFIG"
+            sed -i 's/^CONFIG_LTO_CLANG_FULL=y/CONFIG_LTO_CLANG_THIN=y/' "$DEFCONFIG"
+            sed -i 's/^CONFIG_LTO_CLANG_NONE=y/CONFIG_LTO_CLANG_THIN=y/' "$DEFCONFIG"
+            grep -q '^CONFIG_LTO_CLANG_THIN=y' "$DEFCONFIG" || echo 'CONFIG_LTO_CLANG_THIN=y' >> "$DEFCONFIG"
+          fi
+
+          #跳过将uapi标准头安装到 usr/include 目录的不必要操作，节省编译时间
+          echo "CONFIG_HEADERS_INSTALL=n" >> ./common/arch/arm64/configs/gki_defconfig
+
+          # Remove check_defconfig
+          sed -i 's/check_defconfig//' ./common/build.config.gki
+          echo "✅ 内核配置更新完成"
+          
+      - name: "🔨 Build Kernel | 编译内核"
+        run: |
+          echo "🏗️ 开始内核编译..."
+          if [ "${{ env.KERNEL_VERSION }}" == "6.1" ]; then
+            export KBUILD_BUILD_TIMESTAMP="Tue Sep 23 07:41:33 UTC 2025"
+            export KBUILD_BUILD_VERSION=1
+            export PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r487747c/bin:$PATH"
+            export PATH="/usr/lib/ccache:$PATH"
+            sudo apt install libelf-dev
+            cd kernel_workspace/kernel_platform/common
+            make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 gki_defconfig all
+                      
+          elif [ "${{ env.KERNEL_VERSION }}" == "6.6" ]; then
+            export PATH="/usr/lib/ccache:$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r510928/bin:$PATH" 
+            export PATH="/usr/lib/ccache:$PATH"
+            sudo apt install libelf-dev
+            cd kernel_workspace/kernel_platform/common
+            make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2  gki_defconfig all
+            
+          elif [ "${{ env.KERNEL_VERSION }}" == "5.15" ]; then
+            export PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts/clang/host/linux-x86/clang-r450784e/bin:$PATH"
+            export PATH="/usr/lib/ccache:$PATH"
+            sudo apt install libelf-dev
+            cd kernel_workspace/kernel_platform/common
+            make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out gki_defconfig all
+            
+          elif [ "${{ env.KERNEL_VERSION }}" == "5.10" ]; then
+            export PATH="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts-master/clang/host/linux-x86/clang-r416183b/bin:$PATH"
+            export PATH="/usr/lib/ccache:$PATH"
+            sudo apt install libelf-dev
+            cd kernel_workspace/kernel_platform/common
+            make -j$(nproc --all) LLVM_IAS=1 LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" RUSTC=../../prebuilts/rust/linux-x86/1.73.0b/bin/rustc PAHOLE=../../prebuilts/kernel-build-tools/linux-x86/bin/pahole LD=ld.lld HOSTLD=ld.lld O=out gki_defconfig all
+          fi
+          
+          # 显示ccache统计信息
+          ccache -s
+          echo '✅ 内核编译完成'
+
+      - name: "🧠 Set Artifact Name | 设置产物名称"
+        id: set_name
+        run: |
+          if [ "${{ env.lz4kd }}" = "On" ]; then
+            echo "ARTIFACT_NAME=${{ env.FEIL }}_SukiSU_Ultra_lz4kd_${{ env.KSUVER }}" >> $GITHUB_OUTPUT
+          elif [ "${{ env.KERNEL_VERSION }}" = "6.1" ]; then
+            echo "ARTIFACT_NAME=${{ env.FEIL }}_SukiSU_Ultra_lz4_zstd_${{ env.KSUVER }}" >> $GITHUB_OUTPUT
+          elif [ "${{ env.KERNEL_VERSION }}" = "6.6" ]; then
+            echo "ARTIFACT_NAME=${{ env.FEIL }}_SukiSU_Ultra_lz4_${{ env.KSUVER }}" >> $GITHUB_OUTPUT
+          else
+            echo "ARTIFACT_NAME=${{ env.FEIL }}_SukiSU_Ultra_${{ env.KSUVER }}" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: "📦 Package Kernel | 打包内核"
+        run: |
+          echo "📦 准备AnyKernel3打包环境..."
+          git clone https://github.com/Xiaomichael/AnyKernel3 --depth=1
+          rm -rf ./AnyKernel3/.git
+          mkdir -p kernel_workspace/kernel_platform/out/Final-Image-Find/
+          dir1=""
+          dir2=""
+          image_path=$(find "./kernel_workspace/kernel_platform/common/out/" -name "Image" | head -n 1)
+          if [ -n "$image_path" ]; then
+            dir1=$(dirname "$image_path")/
+            echo "✅ 成功找到 Image 文件"
+          fi
+          if [ -n "$image_path" ] && [ -f "$image_path" ]; then
+            echo "Image file finally located at: $image_path"
+            cp "$image_path" ./AnyKernel3/Image
+            cp "$image_path" kernel_workspace/kernel_platform/out/Final-Image-Find/Image
+          fi
+          cd AnyKernel3
+          zip -r ../${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip ./*
+          cd ..
+          cp ${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip kernel_workspace/
+          echo "✅ 内核打包完成: ${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip"
+      
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+          fingerprint: "D2640E18540E138974BC0669942F2C75D1DC540F"
+          trust_level: 5
+
+      - name: Sign ZIP with GPG
+        run: |
+          cd kernel_workspace
+          ZIP_FILE=$(ls *.zip | head -n 1)
+          echo "Signing $ZIP_FILE..."
+          
+          # Sign
+          gpg --detach-sign --local-user an@anatdx.com --batch --yes --pinentry-mode loopback \
+            --passphrase "${{ secrets.GPG_PASSPHRASE }}" \
+            --output "$ZIP_FILE.asc" "$ZIP_FILE"
+            
+          # Verify output
+          if [ -f "$ZIP_FILE.asc" ]; then
+            echo "Signature created successfully:"
+            ls -lh "$ZIP_FILE.asc"
+          else
+            echo "Error: Signature file not created!"
+            exit 1
+          fi
+
+      # ====================== 上传阶段 ======================
+
+      - name: "📤 Upload AnyKernel3 | 上传 AnyKernel3"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip
+          path: ./kernel_workspace/${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip
+      
+      - name: "📤 Upload AnyKernel3 | 上传签名"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip.asc
+          path: ./kernel_workspace/${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip.asc
+         
+      - name: "📝 Find zram.ko & crypto_zstdn.ko | 查找 zram.ko & crypto_zstdn.ko"
+        run: |
+          find -name zram.ko
+          find -name crypto_zstdn.ko
+          
+      - name: "📤 Upload zram.ko | 上传 zram.ko"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FEIL }}_zram.ko
+          path: ./kernel_workspace/kernel_platform/common/out/drivers/block/zram/zram.ko
+
+      - name: "📤 Upload to telegram | 上传至Telegram群组"
+        run: |
+          if [ ! -z "${{ secrets.TELEGRAM_BOT_TOKEN }}" ]; then
+            echo "📤 正在上传到Telegram..."
+            cd ${{ github.workspace }}
+            pip3 install telethon
+            python3 ${{ github.workspace }}/script/buildbot.py "./kernel_workspace/${{ steps.set_name.outputs.ARTIFACT_NAME }}.zip"
+            echo "✅ 文件已上传到Telegram"
+          fi
+        env:
+          CHATID: ${{secrets.TELEGRAM_CHAT_ID}}
+          BOT_TOKEN: ${{secrets.TELEGRAM_BOT_TOKEN}}
+          KernelVer: ${{ env.ANDROID_VERSION}}-${{ env.KERNEL_VERSION }}
+          DEVICE: ${{ env.FEIL }}
+          LZ4KD: ${{ env.lz4kd }}

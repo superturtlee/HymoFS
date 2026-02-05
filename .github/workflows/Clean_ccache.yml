@@ -1,12 +1,7 @@
-name: 清理全部ccache缓存
+name: Clean Caches
 
 on:
   workflow_dispatch:
-    inputs:
-      confirm:
-        description: "输入DELETE确认清理所有缓存"
-        required: true
-        default: ""
 
 jobs:
   clean-caches:
@@ -14,13 +9,7 @@ jobs:
     permissions:
       actions: write
     
-    steps:
-      - name: 验证确认输入
-        if: ${{ github.event.inputs.confirm != 'DELETE' }}
-        run: |
-          echo "::error::必须输入DELETE确认清理操作!"
-          exit 1
-      
+    steps:     
       - name: 获取并删除所有缓存
         uses: actions/github-script@v6
         with:
@@ -53,9 +42,6 @@ jobs:
       - name: 重置环境
         run: |
           rm -rf $HOME/.ccache/*
-          rm -rf $HOME/.ccache_6.1.57/*
-          rm -rf $HOME/.ccache_6.1.75/*
-          rm -rf $HOME/.ccache_6.1.118/*
           sudo apt clean
           sudo journalctl --vacuum-time=1s
           sudo rm -rf /var/log/*
